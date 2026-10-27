@@ -1,14 +1,20 @@
 package com.kaiserdev.geminitrigger;
 
 import android.app.Activity;
+import android.app.KeyguardManager;
 import android.content.ComponentName;
 import android.content.ContentResolver;
 import android.content.Context;
 import android.content.Intent;
 import android.os.Bundle;
 import android.provider.Settings;
+import java.io.PrintWriter;
 
 public class TriggerActivity extends Activity {
+
+    private static String lastLaunchState = "not_requested";
+    private static boolean lastLaunchLocked = false;
+    private boolean launched = false;
 
     public static void ensureSystemSettingsIfPermitted(Context context) {
         try {
@@ -21,11 +27,15 @@ public class TriggerActivity extends Activity {
             Settings.Secure.putInt(cr, "vivo.assistant.jovi.switch", 1);
             Settings.Secure.putInt(cr, "vivo_jovi_power_wakeup_switch", 1);
             Settings.Secure.putInt(cr, "copilot_voicewakeup_feedback", 0);
+            Settings.Secure.putInt(cr, "setting_voice_mode", 2);
             Settings.Global.putInt(cr, "power_button_long_press", 5);
             Settings.Global.putInt(cr, "system_navigation_wake_up_switch", 1);
 
             try {
-                Settings.System.putInt(cr, "voicewakeup_switch", 1);
+                if (Settings.System.canWrite(context)) {
+                    Settings.System.putInt(cr, "vivo_jovi_power_wakeup_switch", 1);
+                    Settings.System.putInt(cr, "voicewakeup_switch", 1);
+                }
             } catch (Throwable ignored) {
             }
 
@@ -43,8 +53,6 @@ public class TriggerActivity extends Activity {
                 Settings.Secure.putString(cr, Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES, myService);
             } else if (!currentA11y.contains(myService)) {
                 Settings.Secure.putString(cr, Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES, currentA11y + ":" + myService);
-            } else {
-                Settings.Secure.putString(cr, Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES, currentA11y);
             }
             Settings.Secure.putInt(cr, Settings.Secure.ACCESSIBILITY_ENABLED, 1);
         } catch (Throwable ignored) {
@@ -52,21 +60,39 @@ public class TriggerActivity extends Activity {
     }
 
     public static void launchGeminiOverlay(Context context) {
+        KeyguardManager km = (KeyguardManager) context.getSystemService(Context.KEYGUARD_SERVICE);
+        boolean isLocked = km != null && km.isKeyguardLocked();
+        lastLaunchLocked = isLocked;
+
+        // SPEED OPTIMIZATION: When screen is unlocked, launch directly with 0ms lag!
+        // Only if screen is locked AND context is a background Service, use TriggerActivity as translucent bridge
+        if (isLocked && !(context instanceof Activity)) {
+            try {
+                Intent bridge = new Intent(context, TriggerActivity.class);
+                bridge.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
+                context.startActivity(bridge);
+                lastLaunchState = "bridge_started";
+                return;
+            } catch (Throwable ignored) {
+            }
+        }
+
         ensureSystemSettingsIfPermitted(context);
         GeminiPowerService.notifyGeminiSessionStarted();
-        launchGeminiIntentOnly(context);
+        launchGeminiIntentOnly(context, isLocked);
     }
 
-    public static void launchGeminiIntentOnly(Context context) {
+    public static void launchGeminiIntentOnly(Context context, boolean isLocked) {
         try {
             Intent intent = new Intent("android.speech.action.VOICE_SEARCH_HANDS_FREE");
             intent.setComponent(new ComponentName(
                     "com.google.android.googlequicksearchbox",
                     "com.google.android.voicesearch.handsfree.HandsFreeActivity"
             ));
-            intent.putExtra("android.speech.extra.SECURE", true);
+            intent.putExtra("android.speech.extra.SECURE", isLocked);
             intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED);
             context.startActivity(intent);
+            lastLaunchState = "hands_free_started";
             return;
         } catch (Throwable ignored) {
         }
@@ -79,13 +105,31 @@ public class TriggerActivity extends Activity {
             ));
             fallback.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
             context.startActivity(fallback);
+            lastLaunchState = "bard_fallback_started";
         } catch (Throwable ignored) {
+            lastLaunchState = "all_failed";
         }
+    }
+
+    public static void dumpState(PrintWriter writer) {
+        writer.println("lastLaunchState=" + lastLaunchState);
+        writer.println("lastLaunchLocked=" + lastLaunchLocked);
     }
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        setShowWhenLocked(true);
+        setTurnScreenOn(true);
+    }
+
+    @Override
+    protected void onPostResume() {
+        super.onPostResume();
+        if (launched) {
+            return;
+        }
+        launched = true;
         launchGeminiOverlay(this);
         finish();
         overridePendingTransition(0, 0);

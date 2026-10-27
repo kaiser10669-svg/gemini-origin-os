@@ -6,6 +6,7 @@ import android.content.Intent;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
+import android.net.Uri;
 import android.os.Bundle;
 import android.provider.Settings;
 import android.view.Gravity;
@@ -53,7 +54,7 @@ public class InfoActivity extends Activity {
         root.addView(title);
 
         TextView sub = new TextView(this);
-        sub.setText("v3.0 Ultimate • by kaiser & Antigravity AI (4PDA Edition)");
+        sub.setText("v3.1 Ultimate • by kaiser & Antigravity AI (Official 4PDA Edition)");
         sub.setTextSize(13f);
         sub.setTextColor(Color.parseColor("#B294FF"));
         sub.setGravity(Gravity.CENTER);
@@ -80,17 +81,37 @@ public class InfoActivity extends Activity {
         TextView desc = new TextView(this);
         desc.setText(
                 "⚡ 1. Кнопка питания (0.5 сек) и голос «Hi, Jovi» -> Google Gemini:\n" +
-                "• 1-е зажатие (0.5с) или фраза «Hi, Jovi»: мгновенно вызывает голосовой оверлей Google Gemini с активным микрофоном и автоматической голосовой озвучкой ответа (даже сразу после перезагрузки).\n" +
+                "• 1-е зажатие (0.5с) или фраза «Hi, Jovi»: мгновенно вызывает голосовой оверлей Google Gemini с активным микрофоном и автоматической голосовой озвучкой ответа (TTS).\n" +
                 "• 2-е зажатие подряд (в течение 5с): открывает штатное меню Выключения / Перезагрузки.\n\n" +
                 "🔍 2. Глобальный Circle to Search (Обвести и найти):\n" +
-                "• Работает через иконку «Circle to Search» (назначьте её на Двойное нажатие задней панели / Боковую панель), плитку в шторке или при касании двумя пальцами (VTouch).\n" +
-                "• Включает два движка: нативный Global Circle to Search + автономный Google Lens Поиск по экрану (работает даже без Shizuku!)."
+                "• Работает через иконку «Circle to Search» (назначьте на Двойной тап задней панели / Боковую панель), плитку в шторке или при касании двумя пальцами (VTouch).\n" +
+                "• Включает 2 режима: нативный Global Circle to Search (если активен MiCTS) + автономный Google Lens Поиск по экрану (работает всегда без Shizuku!).\n\n" +
+                "🔒 3. Экран блокировки (OriginOS Lock Screen):\n" +
+                "• Включите в OriginOS для Google и Gemini by kaiser разрешения «Показ на экране блокировки», «Окна из фона» и «Автозапуск» (кнопки ниже)."
         );
         desc.setTextSize(14f);
         desc.setTextColor(Color.parseColor("#E2E8F0"));
         desc.setLineSpacing(0f, 1.25f);
         card.addView(desc);
         root.addView(card);
+
+        Button btnGoogleLockScreen = createButton("🔒 OriginOS: Google на экране блокировки", "#1E293B");
+        btnGoogleLockScreen.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                openOriginPermissions("com.google.android.googlequicksearchbox");
+            }
+        });
+        root.addView(btnGoogleLockScreen);
+
+        Button btnAppLockScreen = createButton("🔒 OriginOS: Gemini by kaiser на экране блокировки", "#1E293B");
+        btnAppLockScreen.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                openOriginPermissions(getPackageName());
+            }
+        });
+        root.addView(btnAppLockScreen);
 
         Button btnTestGemini = createButton("✨ Запустить голосовой оверлей Gemini", "#1D6FF2");
         btnTestGemini.setOnClickListener(new View.OnClickListener() {
@@ -210,7 +231,7 @@ public class InfoActivity extends Activity {
                             Toast.LENGTH_LONG
                     ).show();
                     Intent i = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS);
-                    i.setData(android.net.Uri.parse("package:" + getPackageName()));
+                    i.setData(Uri.parse("package:" + getPackageName()));
                     startActivity(i);
                 } catch (Throwable ignored) {
                 }
@@ -226,6 +247,24 @@ public class InfoActivity extends Activity {
     protected void onResume() {
         super.onResume();
         TriggerActivity.ensureSystemSettingsIfPermitted(this);
+    }
+
+    private void openOriginPermissions(String packageName) {
+        try {
+            Intent intent = new Intent("permission.intent.action.softPermissionDetail");
+            intent.setPackage("com.vivo.permissionmanager");
+            intent.putExtra("packagename", packageName);
+            intent.putExtra("packageName", packageName);
+            startActivity(intent);
+            String message = getPackageName().equals(packageName)
+                    ? "Включите Показ на экране блокировки, Окна из фона и Автозапуск"
+                    : "Включите «Показ на экране блокировки» (Display on lock screen)";
+            Toast.makeText(this, message, Toast.LENGTH_LONG).show();
+        } catch (Throwable ignored) {
+            Intent intent = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS);
+            intent.setData(Uri.parse("package:" + packageName));
+            startActivity(intent);
+        }
     }
 
     private Button createButton(String text, String hexColor) {
@@ -249,8 +288,10 @@ public class InfoActivity extends Activity {
         int margin = (int) (6 * density);
         lp.setMargins(0, margin, 0, margin);
         b.setLayoutParams(lp);
-        int vPad = (int) (12 * density);
-        b.setPadding(vPad, vPad, vPad, vPad);
+
+        int padV = (int) (13 * density);
+        int padH = (int) (16 * density);
+        b.setPadding(padH, padV, padH, padV);
         b.setGravity(Gravity.CENTER);
         return b;
     }
