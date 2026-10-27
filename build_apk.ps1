@@ -20,22 +20,25 @@ Write-Host "2. AAPT2 link..."
     --java "$outDir\gen"
 
 Write-Host "3. Javac..."
+$shizukuJar = "C:\vivo\gemini-origin-os\app\libs\shizuku.jar"
 $javaSources = @(Get-ChildItem -Path "C:\vivo\gemini-origin-os\app\src", "$outDir\gen" -Recurse -Filter "*.java" | Select-Object -ExpandProperty FullName)
-javac.exe -source 11 -target 11 -encoding UTF-8 -cp $androidJar -d "$outDir\classes" $javaSources
+javac.exe -source 11 -target 11 -encoding UTF-8 -cp "$androidJar;$shizukuJar" -d "$outDir\classes" $javaSources
 
 Write-Host "4. D8..."
 $classFiles = @(Get-ChildItem -Path "$outDir\classes" -Recurse -Filter "*.class" | Select-Object -ExpandProperty FullName)
-& "$buildTools\d8.bat" --min-api 30 --lib $androidJar --output "$outDir" $classFiles
+& "$buildTools\d8.bat" --min-api 30 --lib $androidJar --output "$outDir" $classFiles "$shizukuJar"
 
 Write-Host "5. Packaging..."
 jar.exe uf "$outDir\unsigned.apk" -C "$outDir" classes.dex
 & "$buildTools\zipalign.exe" -f 4 "$outDir\unsigned.apk" "$outDir\aligned.apk"
 
 $apkRelease = "C:\vivo\gemini-origin-os\releases\Gemini_by_kaiser_v3.2.apk"
+$apkReleaseV326 = "C:\vivo\gemini-origin-os\releases\Gemini_by_kaiser_v3.2.6.apk"
 & "$buildTools\apksigner.bat" sign --ks $keystore --ks-pass pass:android --key-pass pass:android --out $apkRelease "$outDir\aligned.apk"
-
+Copy-Item $apkRelease $apkReleaseV326 -Force
 Copy-Item $apkRelease "C:\vivo\gemini-origin-os\installer\Gemini_by_kaiser_v3.2.apk" -Force
 Copy-Item $apkRelease "C:\vivo\Gemini_by_kaiser_v3.2_4PDA.apk" -Force
+Copy-Item $apkRelease "C:\vivo\Gemini_by_kaiser_v3.2.6_4PDA.apk" -Force
 Remove-Item -Recurse -Force $outDir
 
 Write-Host "6. Installing onto phone via WiFi ADB..."

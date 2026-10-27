@@ -514,6 +514,9 @@ public class GeminiPowerService extends AccessibilityService {
     }
 
     public static boolean isShizukuRunning(Context context) {
+        if (ShizukuHelper.isBinderAlive()) {
+            return true;
+        }
         try {
             Uri uri = Uri.parse("content://moe.shizuku.privileged.api.shizuku");
             ContentResolver cr = context.getContentResolver();

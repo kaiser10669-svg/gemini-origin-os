@@ -1,10 +1,13 @@
 package com.kaiserdev.geminitrigger;
 
 import android.app.Activity;
+import android.app.AlertDialog;
+import android.app.ProgressDialog;
 import android.app.StatusBarManager;
 import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
+import android.content.pm.PackageManager;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
@@ -24,6 +27,7 @@ import android.widget.Switch;
 import android.widget.TextView;
 import android.widget.Toast;
 import java.util.function.Consumer;
+import rikka.shizuku.Shizuku;
 
 public class InfoActivity extends Activity {
 
@@ -32,11 +36,60 @@ public class InfoActivity extends Activity {
     private TextView tvA11yVal;
     private TextView tvMictsVal;
     private TextView tvShizukuVal;
+    private TextView tvShizukuPermVal;
+    private LinearLayout shizukuActionsContainer;
+
+    private final Shizuku.OnBinderReceivedListener binderReceivedListener = new Shizuku.OnBinderReceivedListener() {
+        @Override
+        public void onBinderReceived() {
+            runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    updateStatusIndicators();
+                }
+            });
+        }
+    };
+
+    private final Shizuku.OnBinderDeadListener binderDeadListener = new Shizuku.OnBinderDeadListener() {
+        @Override
+        public void onBinderDead() {
+            runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    updateStatusIndicators();
+                }
+            });
+        }
+    };
+
+    private final Shizuku.OnRequestPermissionResultListener requestPermissionResultListener = new Shizuku.OnRequestPermissionResultListener() {
+        @Override
+        public void onRequestPermissionResult(int requestCode, final int grantResult) {
+            runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    updateStatusIndicators();
+                    if (grantResult == PackageManager.PERMISSION_GRANTED) {
+                        Toast.makeText(InfoActivity.this, "🎉 Доступ Shizuku успешно получен!", Toast.LENGTH_SHORT).show();
+                    } else {
+                        Toast.makeText(InfoActivity.this, "В доступе Shizuku отказано", Toast.LENGTH_SHORT).show();
+                    }
+                }
+            });
+        }
+    };
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         TriggerActivity.ensureSystemSettingsIfPermitted(this);
+
+        try {
+            Shizuku.addBinderReceivedListenerSticky(binderReceivedListener);
+            Shizuku.addBinderDeadListener(binderDeadListener);
+            Shizuku.addRequestPermissionResultListener(requestPermissionResultListener);
+        } catch (Throwable ignored) {}
 
         density = getResources().getDisplayMetrics().density;
 
@@ -67,7 +120,7 @@ public class InfoActivity extends Activity {
         root.addView(title);
 
         TextView sub = new TextView(this);
-        sub.setText("v3.2 Ultimate • by kaiser & Antigravity AI (Official 4PDA Edition)");
+        sub.setText("v3.2.6 Ultimate • by kaiser & Antigravity AI (Official 4PDA Edition)");
         sub.setTextSize(12.5f);
         sub.setTextColor(Color.parseColor("#B294FF"));
         sub.setGravity(Gravity.CENTER);
@@ -86,7 +139,10 @@ public class InfoActivity extends Activity {
         // 4. Testing & OriginOS Shortcuts
         createActionsCard();
 
-        // 5. OriginOS Permissions & Lock Screen
+        // 5. OriginOS System Gestures Tip Card
+        createOriginGesturesTipCard();
+
+        // 6. OriginOS Permissions & Lock Screen
         createPermissionsCard();
 
         scroll.addView(root);
@@ -100,13 +156,25 @@ public class InfoActivity extends Activity {
         updateStatusIndicators();
     }
 
+    @Override
+    protected void onDestroy() {
+        super.onDestroy();
+        try {
+            Shizuku.removeBinderReceivedListener(binderReceivedListener);
+            Shizuku.removeBinderDeadListener(binderDeadListener);
+            Shizuku.removeRequestPermissionResultListener(requestPermissionResultListener);
+        } catch (Throwable ignored) {}
+    }
+
     private void updateStatusIndicators() {
-        if (tvA11yVal == null || tvMictsVal == null || tvShizukuVal == null) {
+        if (tvA11yVal == null || tvMictsVal == null || tvShizukuVal == null || tvShizukuPermVal == null) {
             return;
         }
         boolean a11yActive = GeminiPowerService.instance != null;
         boolean mictsInstalled = GeminiPowerService.isMictsInstalled(this);
+        boolean shizukuInstalled = ShizukuHelper.isShizukuInstalled(this);
         boolean shizukuRunning = GeminiPowerService.isShizukuRunning(this);
+        boolean shizukuPerm = ShizukuHelper.hasPermission();
 
         tvA11yVal.setText(a11yActive ? "АКТИВНА ✅" : "ВЫКЛЮЧЕНА ❌");
         tvA11yVal.setTextColor(Color.parseColor(a11yActive ? "#10B981" : "#EF4444"));
@@ -114,8 +182,137 @@ public class InfoActivity extends Activity {
         tvMictsVal.setText(mictsInstalled ? "УСТАНОВЛЕН ✅" : "НЕ НАЙДЕН ℹ️");
         tvMictsVal.setTextColor(Color.parseColor(mictsInstalled ? "#10B981" : "#94A3B8"));
 
-        tvShizukuVal.setText(shizukuRunning ? "АКТИВЕН ✅" : "НЕ ЗАПУЩЕН ⚠️");
-        tvShizukuVal.setTextColor(Color.parseColor(shizukuRunning ? "#10B981" : "#F59E0B"));
+        if (!shizukuInstalled) {
+            tvShizukuVal.setText("НЕ УСТАНОВЛЕН ❌");
+            tvShizukuVal.setTextColor(Color.parseColor("#EF4444"));
+            tvShizukuPermVal.setText("НЕДОСТУПНО ❌");
+            tvShizukuPermVal.setTextColor(Color.parseColor("#94A3B8"));
+        } else if (shizukuRunning) {
+            tvShizukuVal.setText("АКТИВЕН ✅");
+            tvShizukuVal.setTextColor(Color.parseColor("#10B981"));
+            if (shizukuPerm) {
+                tvShizukuPermVal.setText("ВЫДАНО ✅");
+                tvShizukuPermVal.setTextColor(Color.parseColor("#10B981"));
+            } else {
+                tvShizukuPermVal.setText("НЕ ВЫДАНО ⚠️");
+                tvShizukuPermVal.setTextColor(Color.parseColor("#F59E0B"));
+            }
+        } else {
+            tvShizukuVal.setText("НЕ ЗАПУЩЕН ⚠️");
+            tvShizukuVal.setTextColor(Color.parseColor("#F59E0B"));
+            tvShizukuPermVal.setText("ОЖИДАНИЕ СЕРВЕРА ⏳");
+            tvShizukuPermVal.setTextColor(Color.parseColor("#94A3B8"));
+        }
+
+        updateShizukuControls(shizukuInstalled, shizukuRunning, shizukuPerm);
+    }
+
+    private void updateShizukuControls(boolean installed, boolean running, boolean permitted) {
+        if (shizukuActionsContainer == null) return;
+        shizukuActionsContainer.removeAllViews();
+
+        if (!installed) {
+            Button btnInstall = createButton("📥 Установить приложение Shizuku", "#334155");
+            btnInstall.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    try {
+                        startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse("https://shizuku.rikka.app")));
+                    } catch (Throwable ignored) {}
+                }
+            });
+            shizukuActionsContainer.addView(btnInstall);
+            return;
+        }
+
+        if (running && permitted) {
+            Button btnAuto = createButton("⚡ Авто-настройка в 1 клик через Shizuku", "#059669");
+            btnAuto.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    handleShizukuAutoConfig();
+                }
+            });
+            shizukuActionsContainer.addView(btnAuto);
+        } else if (running) {
+            Button btnReq = createButton("🔑 Запросить доступ к Shizuku", "#D97706");
+            btnReq.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    ShizukuHelper.requestPermission(ShizukuHelper.SHIZUKU_REQ_CODE);
+                }
+            });
+            shizukuActionsContainer.addView(btnReq);
+        }
+
+        Button btnOpenShizuku = createButton("🚀 Открыть приложение Shizuku", "#1E293B");
+        btnOpenShizuku.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                try {
+                    Intent i = getPackageManager().getLaunchIntentForPackage("moe.shizuku.privileged.api");
+                    if (i != null) {
+                        startActivity(i);
+                    }
+                } catch (Throwable ignored) {}
+            }
+        });
+        shizukuActionsContainer.addView(btnOpenShizuku);
+    }
+
+    private void handleShizukuAutoConfig() {
+        final ProgressDialog pd = new ProgressDialog(this);
+        pd.setTitle("Авто-настройка Shizuku");
+        pd.setMessage("Применение системных разрешений и служб...");
+        pd.setCancelable(false);
+        pd.show();
+
+        ShizukuHelper.runAutoConfigure(this, new ShizukuHelper.AutoConfigCallback() {
+            @Override
+            public void onProgress(final String message) {
+                runOnUiThread(new Runnable() {
+                    @Override
+                    public void run() {
+                        if (pd.isShowing()) {
+                            pd.setMessage(message);
+                        }
+                    }
+                });
+            }
+
+            @Override
+            public void onComplete(final boolean success, final String message) {
+                runOnUiThread(new Runnable() {
+                    @Override
+                    public void run() {
+                        if (pd.isShowing()) {
+                            pd.dismiss();
+                        }
+                        updateStatusIndicators();
+
+                        AlertDialog.Builder builder = new AlertDialog.Builder(InfoActivity.this);
+                        if (success) {
+                            builder.setTitle("🎉 Настройка завершена!");
+                            builder.setMessage(
+                                    "Все системные параметры успешно применены через Shizuku:\n\n" +
+                                    "✅ WRITE_SECURE_SETTINGS выдано\n" +
+                                    "✅ Окна поверх других приложений включены\n" +
+                                    "✅ Энергосбережение отключено (Doze Whitelist)\n" +
+                                    "✅ Служба Gemini Power активирована\n" +
+                                    "✅ Удержание питания перенаправлено на Jovi -> Gemini\n\n" +
+                                    "Теперь всё работает полностью автономно без ПК!"
+                            );
+                            builder.setPositiveButton("Отлично", null);
+                        } else {
+                            builder.setTitle("Ошибка авто-настройки");
+                            builder.setMessage(message);
+                            builder.setPositiveButton("Понятно", null);
+                        }
+                        builder.show();
+                    }
+                });
+            }
+        });
     }
 
     private void createStatusDashboard() {
@@ -133,24 +330,15 @@ public class InfoActivity extends Activity {
         tvShizukuVal = new TextView(this);
         card.addView(createStatusRow("Сервер Shizuku:", tvShizukuVal));
 
-        updateStatusIndicators();
+        tvShizukuPermVal = new TextView(this);
+        card.addView(createStatusRow("Разрешение Shizuku:", tvShizukuPermVal));
 
-        if (GeminiPowerService.isShizukuInstalled(this)) {
-            Button btnShizuku = createButton("🚀 Открыть приложение Shizuku", "#334155");
-            btnShizuku.setOnClickListener(new View.OnClickListener() {
-                @Override
-                public void onClick(View v) {
-                    try {
-                        Intent i = getPackageManager().getLaunchIntentForPackage("moe.shizuku.privileged.api");
-                        if (i != null) {
-                            startActivity(i);
-                        }
-                    } catch (Throwable ignored) {
-                    }
-                }
-            });
-            card.addView(btnShizuku);
-        }
+        shizukuActionsContainer = new LinearLayout(this);
+        shizukuActionsContainer.setOrientation(LinearLayout.VERTICAL);
+        shizukuActionsContainer.setPadding(0, (int) (8 * density), 0, 0);
+        card.addView(shizukuActionsContainer);
+
+        updateStatusIndicators();
 
         root.addView(card);
     }
@@ -328,41 +516,39 @@ public class InfoActivity extends Activity {
         });
         card.addView(btnWallet);
 
-        Button btnBackTap = createButton("👆 Настроить Двойной тап по спинке (Back Tap)", "#1E293B");
-        btnBackTap.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                try {
-                    Intent i = new Intent();
-                    i.setComponent(new ComponentName("com.vivo.SmartKey", "com.vivo.SmartKey.backtap.ui.MainActivity"));
-                    startActivity(i);
-                } catch (Throwable t) {
-                    try {
-                        Intent i2 = new Intent();
-                        i2.setComponent(new ComponentName("com.android.settings", "com.android.settings.Settings$ShortcutsAccessibilityActivity"));
-                        startActivity(i2);
-                    } catch (Throwable t2) {
-                        startActivity(new Intent(Settings.ACTION_SETTINGS));
-                    }
-                }
-            }
-        });
-        card.addView(btnBackTap);
+        root.addView(card);
+    }
 
-        Button btnPower = createButton("⚙️ Настройки кнопки питания (0.5 сек)", "#1E293B");
-        btnPower.setOnClickListener(new View.OnClickListener() {
+    private void createOriginGesturesTipCard() {
+        LinearLayout card = createCardContainer();
+
+        TextView cardTitle = createSectionHeader("💡 Подсказка: Системные жесты OriginOS 7");
+        card.addView(cardTitle);
+
+        TextView tipText = new TextView(this);
+        tipText.setText(
+                "В OriginOS прямые переходы в системные настройки жестов защищены подписью Vivo. Настройте их вручную один раз:\n\n" +
+                "1️⃣ Кнопка питания (удержание 0.5 сек ➔ Gemini):\n" +
+                "Настройки ➔ Ярлыки и спец. возможности ➔ Кнопка питания ➔ Выберите «Jovi» (наше приложение мгновенно перехватит его на Gemini).\n\n" +
+                "2️⃣ Двойной тап по спинке (Back Tap):\n" +
+                "Настройки ➔ Ярлыки и спец. возможности ➔ Быстрое действие / Тап по крышке ➔ Выберите «Gemini by kaiser»."
+        );
+        tipText.setTextSize(13f);
+        tipText.setTextColor(Color.parseColor("#CBD5E1"));
+        tipText.setLineSpacing(0, 1.25f);
+        tipText.setPadding(0, 0, 0, (int) (12 * density));
+        card.addView(tipText);
+
+        Button btnSettings = createButton("⚙️ Открыть системные Настройки", "#334155");
+        btnSettings.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
                 try {
-                    Intent i = new Intent();
-                    i.setComponent(new ComponentName("com.android.settings", "com.android.settings.Settings$PowerMenuSettingsActivity"));
-                    startActivity(i);
-                } catch (Throwable t) {
                     startActivity(new Intent(Settings.ACTION_SETTINGS));
-                }
+                } catch (Throwable ignored) {}
             }
         });
-        card.addView(btnPower);
+        card.addView(btnSettings);
 
         root.addView(card);
     }
