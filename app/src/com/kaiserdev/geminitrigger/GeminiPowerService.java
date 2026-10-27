@@ -57,8 +57,6 @@ public class GeminiPowerService extends AccessibilityService {
     private boolean micConfirmedActive = false;
     private boolean micAutoClicked = false;
     private boolean playbackAutoClicked = false;
-    private boolean retryLaunchDone = false;
-    private boolean retryTapDone = false;
     private String lastPlaybackStatus = "idle";
     private String lastPlaybackDescription = "";
 
@@ -129,7 +127,7 @@ public class GeminiPowerService extends AccessibilityService {
             }
             checkVoiceSessionProgress(elapsed);
             if (voiceSessionStartTime != 0L && !playbackAutoClicked) {
-                handler.postDelayed(this, 100L);
+                handler.postDelayed(this, 500L);
             }
         }
     };
@@ -142,14 +140,12 @@ public class GeminiPowerService extends AccessibilityService {
         svc.voiceSessionStartTime = SystemClock.elapsedRealtime();
         svc.micConfirmedActive = false;
         svc.micAutoClicked = false;
-        svc.retryTapDone = false;
         svc.playbackAutoClicked = false;
-        svc.retryLaunchDone = false;
         svc.lastPlaybackStatus = "waiting_for_google_window";
         svc.lastPlaybackDescription = "";
 
         svc.handler.removeCallbacks(svc.sessionWatcherRunnable);
-        svc.handler.postDelayed(svc.sessionWatcherRunnable, 100L);
+        svc.handler.postDelayed(svc.sessionWatcherRunnable, 300L);
     }
 
     private void checkVoiceSessionProgress(long elapsed) {
@@ -158,7 +154,7 @@ public class GeminiPowerService extends AccessibilityService {
             return;
         }
         try {
-            if (!micConfirmedActive) {
+            if (!micAutoClicked && !micConfirmedActive) {
                 inspectGoogleFloatyForMic(root, elapsed);
             }
             inspectGoogleFloatyRoot(root, elapsed);
@@ -205,23 +201,14 @@ public class GeminiPowerService extends AccessibilityService {
             return;
         }
 
-        // Tap once window is settled (at 320ms), and retry once at 750ms if mic is not yet active
-        if ((elapsed >= 320L && !micAutoClicked) || (elapsed >= 750L && !retryTapDone && !micConfirmedActive)) {
+        // Tap microphone ONCE as soon as the Robin floaty view has settled (300ms+)
+        if (elapsed >= 300L && !micAutoClicked) {
             if (hasVisibleNodeWithId(root, ID_MIC_BUTTON) || hasVisibleNodeWithId(root, ID_TEXT_QUERY)) {
                 if (tapNodeWithId(root, ID_MIC_BUTTON)) {
-                    if (!micAutoClicked) {
-                        micAutoClicked = true;
-                        lastPlaybackStatus = "mic_tapped_320ms";
-                    } else {
-                        retryTapDone = true;
-                        lastPlaybackStatus = "mic_retried_750ms";
-                    }
+                    micAutoClicked = true;
+                    lastPlaybackStatus = "mic_tapped_clean";
                 }
             }
-        }
-        if (!retryLaunchDone && elapsed >= 2200L && !micConfirmedActive) {
-            retryLaunchDone = true;
-            TriggerActivity.launchGeminiIntentOnly(this, false);
         }
     }
 
@@ -253,10 +240,11 @@ public class GeminiPowerService extends AccessibilityService {
                         if (n.isVisibleToUser() && n.isEnabled()) {
                             Rect bounds = new Rect();
                             n.getBoundsInScreen(bounds);
-                            n.performAction(AccessibilityNodeInfo.ACTION_CLICK);
                             n.recycle();
-                            if (bounds.width() > 0 && bounds.height() > 0) {
-                                return tapCoordinates(bounds.centerX(), bounds.centerY());
+                            int cx = bounds.centerX();
+                            int cy = bounds.centerY();
+                            if (cx > 0 && cy > 0) {
+                                return tapCoordinates(cx, cy);
                             }
                             return true;
                         }
@@ -272,10 +260,11 @@ public class GeminiPowerService extends AccessibilityService {
             if (micDesc != null) {
                 Rect bounds = new Rect();
                 micDesc.getBoundsInScreen(bounds);
-                micDesc.performAction(AccessibilityNodeInfo.ACTION_CLICK);
                 micDesc.recycle();
-                if (bounds.width() > 0 && bounds.height() > 0) {
-                    return tapCoordinates(bounds.centerX(), bounds.centerY());
+                int cx = bounds.centerX();
+                int cy = bounds.centerY();
+                if (cx > 0 && cy > 0) {
+                    return tapCoordinates(cx, cy);
                 }
                 return true;
             }
@@ -613,17 +602,26 @@ public class GeminiPowerService extends AccessibilityService {
         if (matched) {
             lastAssistantEvent = pkg + "/" + cls;
             long now = SystemClock.elapsedRealtime();
-            if (now - lastTriggerTime < 800L) {
+
+            // 1. Debounce hardware button press:
+            // A physical hold lasts ~1000-1400ms. Discard repeat events from the SAME hold!
+            if (now - lastTriggerTime < 1600L) {
                 return;
             }
             lastTriggerTime = now;
             assistantTriggerCount++;
 
-            // If user holds Power Button a SECOND time within 5 seconds of opening Gemini,
-            // open the native System Power Menu (Reboot / Power Off)!
-            if (isPrefEnabled(this, PREF_DOUBLE_POWER_MENU, true) && lastGeminiOpenTime != 0L && (now - lastGeminiOpenTime) < 5000L) {
+            // 2. Multi-press check: Second deliberate hold within 5.5 seconds -> System Power Dialog
+            if (isPrefEnabled(this, PREF_DOUBLE_POWER_MENU, true)
+                    && lastGeminiOpenTime != 0L
+                    && (now - lastGeminiOpenTime) >= 1600L
+                    && (now - lastGeminiOpenTime) <= 5500L) {
+
                 lastGeminiOpenTime = 0L;
                 voiceSessionStartTime = 0L;
+                handler.removeCallbacks(sessionWatcherRunnable);
+
+                // Dismiss Copilot and open System Power Dialog
                 performGlobalAction(GLOBAL_ACTION_BACK);
                 handler.postDelayed(new Runnable() {
                     @Override
@@ -634,6 +632,7 @@ public class GeminiPowerService extends AccessibilityService {
                 return;
             }
 
+            // 3. First press: launch Gemini
             lastGeminiOpenTime = now;
             // Dismiss Vivo's Chinese BlueLM Copilot / Jovi window
             performGlobalAction(GLOBAL_ACTION_BACK);

@@ -79,7 +79,7 @@ public class TriggerActivity extends Activity {
             }
         }
 
-        ensureSystemSettingsIfPermitted(context);
+        // Zero-lag instant launch (settings are already persisted at boot / onServiceConnected)
         GeminiPowerService.notifyGeminiSessionStarted();
         launchGeminiIntentOnly(context, isLocked);
     }
