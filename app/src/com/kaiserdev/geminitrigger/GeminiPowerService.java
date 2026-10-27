@@ -113,6 +113,44 @@ public class GeminiPowerService extends AccessibilityService {
                 || "com.vivo.ai.copilot.shortcut.component".equals(pkg);
     }
 
+    private final Runnable micActivationRunnable = new Runnable() {
+        @Override
+        public void run() {
+            if (voiceSessionStartTime == 0L || micAutoClicked || micConfirmedActive) {
+                return;
+            }
+            long elapsed = SystemClock.elapsedRealtime() - voiceSessionStartTime;
+            if (elapsed > 2500L) {
+                return;
+            }
+
+            AccessibilityNodeInfo root = findGoogleQuickSearchBoxRoot();
+            if (root != null) {
+                try {
+                    if (hasVisibleNodeWithId(root, ID_VOICE_WAVE)) {
+                        micConfirmedActive = true;
+                        lastPlaybackStatus = "mic_listening";
+                        performHaptic(GeminiPowerService.this);
+                        return;
+                    }
+                    if (hasVisibleNodeWithId(root, ID_MIC_BUTTON) || hasVisibleNodeWithId(root, ID_TEXT_QUERY)) {
+                        if (tapNodeWithId(root, ID_MIC_BUTTON)) {
+                            micAutoClicked = true;
+                            lastPlaybackStatus = "mic_tapped_fast";
+                            return;
+                        }
+                    }
+                } finally {
+                    root.recycle();
+                }
+            }
+
+            if (!micAutoClicked && !micConfirmedActive && voiceSessionStartTime != 0L) {
+                handler.postDelayed(this, 60L);
+            }
+        }
+    };
+
     private final Runnable sessionWatcherRunnable = new Runnable() {
         @Override
         public void run() {
@@ -127,7 +165,7 @@ public class GeminiPowerService extends AccessibilityService {
             }
             checkVoiceSessionProgress(elapsed);
             if (voiceSessionStartTime != 0L && !playbackAutoClicked) {
-                handler.postDelayed(this, 500L);
+                handler.postDelayed(this, 800L);
             }
         }
     };
@@ -144,8 +182,13 @@ public class GeminiPowerService extends AccessibilityService {
         svc.lastPlaybackStatus = "waiting_for_google_window";
         svc.lastPlaybackDescription = "";
 
+        // Fast mic activation ticker (every 60ms, stops as soon as mic tapped)
+        svc.handler.removeCallbacks(svc.micActivationRunnable);
+        svc.handler.postDelayed(svc.micActivationRunnable, 100L);
+
+        // Relaxed watcher for TTS answer playback
         svc.handler.removeCallbacks(svc.sessionWatcherRunnable);
-        svc.handler.postDelayed(svc.sessionWatcherRunnable, 300L);
+        svc.handler.postDelayed(svc.sessionWatcherRunnable, 1500L);
     }
 
     private void checkVoiceSessionProgress(long elapsed) {
@@ -165,6 +208,17 @@ public class GeminiPowerService extends AccessibilityService {
 
     private AccessibilityNodeInfo findGoogleQuickSearchBoxRoot() {
         try {
+            AccessibilityNodeInfo active = getRootInActiveWindow();
+            if (active != null) {
+                CharSequence pkg = active.getPackageName();
+                if (pkg != null && GSA_PKG.equals(pkg.toString())) {
+                    return active;
+                }
+                active.recycle();
+            }
+        } catch (Throwable ignored) {
+        }
+        try {
             List<AccessibilityWindowInfo> windows = getWindows();
             if (windows != null) {
                 for (AccessibilityWindowInfo w : windows) {
@@ -180,17 +234,6 @@ public class GeminiPowerService extends AccessibilityService {
             }
         } catch (Throwable ignored) {
         }
-        try {
-            AccessibilityNodeInfo active = getRootInActiveWindow();
-            if (active != null) {
-                CharSequence pkg = active.getPackageName();
-                if (pkg != null && GSA_PKG.equals(pkg.toString())) {
-                    return active;
-                }
-                active.recycle();
-            }
-        } catch (Throwable ignored) {
-        }
         return null;
     }
 
@@ -198,11 +241,12 @@ public class GeminiPowerService extends AccessibilityService {
         if (hasVisibleNodeWithId(root, ID_VOICE_WAVE)) {
             micConfirmedActive = true;
             lastPlaybackStatus = "mic_listening";
+            performHaptic(this);
             return;
         }
 
-        // Tap microphone ONCE as soon as the Robin floaty view has settled (300ms+)
-        if (elapsed >= 300L && !micAutoClicked) {
+        // Tap microphone ONCE as soon as the Robin floaty view has settled
+        if (elapsed >= 150L && !micAutoClicked) {
             if (hasVisibleNodeWithId(root, ID_MIC_BUTTON) || hasVisibleNodeWithId(root, ID_TEXT_QUERY)) {
                 if (tapNodeWithId(root, ID_MIC_BUTTON)) {
                     micAutoClicked = true;
@@ -243,12 +287,12 @@ public class GeminiPowerService extends AccessibilityService {
                             n.recycle();
                             int cx = bounds.centerX();
                             int cy = bounds.centerY();
-                            if (cx > 0 && cy > 0) {
+                            if (cx > 0 && cy > 0 && bounds.width() > 10 && bounds.height() > 10) {
                                 return tapCoordinates(cx, cy);
                             }
-                            return true;
+                        } else {
+                            n.recycle();
                         }
-                        n.recycle();
                     }
                 }
             }
@@ -263,10 +307,9 @@ public class GeminiPowerService extends AccessibilityService {
                 micDesc.recycle();
                 int cx = bounds.centerX();
                 int cy = bounds.centerY();
-                if (cx > 0 && cy > 0) {
+                if (cx > 0 && cy > 0 && bounds.width() > 10 && bounds.height() > 10) {
                     return tapCoordinates(cx, cy);
                 }
-                return true;
             }
         } catch (Throwable ignored) {
         }
@@ -534,7 +577,10 @@ public class GeminiPowerService extends AccessibilityService {
         // Monitor Google FloatyActivity during active voice session for auto-mic and auto-TTS playback
         if (GSA_PKG.equals(pkg) && voiceSessionStartTime != 0L) {
             long elapsed = SystemClock.elapsedRealtime() - voiceSessionStartTime;
-            if (elapsed <= 35000L) {
+            if (!micAutoClicked && !micConfirmedActive && elapsed <= 2500L) {
+                handler.removeCallbacks(micActivationRunnable);
+                micActivationRunnable.run();
+            } else if (elapsed <= 35000L) {
                 checkVoiceSessionProgress(elapsed);
             }
         }
