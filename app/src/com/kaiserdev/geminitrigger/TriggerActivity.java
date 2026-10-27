@@ -61,6 +61,7 @@ public class TriggerActivity extends Activity {
     }
 
     public static void launchGeminiOverlay(Context context) {
+        GeminiPowerService.performHaptic(context);
         KeyguardManager km = (KeyguardManager) context.getSystemService(Context.KEYGUARD_SERVICE);
         boolean isLocked = km != null && km.isKeyguardLocked();
         lastLaunchLocked = isLocked;

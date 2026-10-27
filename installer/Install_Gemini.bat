@@ -1,10 +1,10 @@
 @echo off
 setlocal
 chcp 65001 >nul
-title Установка Gemini by kaiser v3.1 (Vivo & iQOO OriginOS)
+title Установка Gemini by kaiser v3.2 (Vivo & iQOO OriginOS)
 cls
 echo =====================================================================
-echo       GEMINI BY KAISER v3.1 - УСТАНОВЩИК В 1 КЛИК ДЛЯ ORIGINOS
+echo       GEMINI BY KAISER v3.2 - УСТАНОВЩИК В 1 КЛИК ДЛЯ ORIGINOS
 echo =====================================================================
 echo.
 echo Подключите ваш Vivo или iQOO по USB к компьютеру.
@@ -18,8 +18,8 @@ if not exist "%ADB%" (
     exit /b 1
 )
 
-set "APK=%~dp0Gemini_by_kaiser_v3.1.apk"
-if not exist "%APK%" set "APK=%~dp0..\releases\Gemini_by_kaiser_v3.1.apk"
+set "APK=%~dp0Gemini_by_kaiser_v3.2.apk"
+if not exist "%APK%" set "APK=%~dp0..\releases\Gemini_by_kaiser_v3.2.apk"
 if not exist "%APK%" set "APK=%~dp0Gemini_by_kaiser_v3.0.apk"
 
 echo [1/4] Проверка подключения устройства...
@@ -43,7 +43,7 @@ for /f "tokens=*" %%m in ('"%ADB%" shell getprop ro.product.model 2^>nul') do ec
 for /f "tokens=*" %%b in ('"%ADB%" shell getprop ro.build.display.id 2^>nul') do echo Прошивка: %%b
 echo.
 
-echo [2/4] Установка приложения Gemini by kaiser v3.1...
+echo [2/4] Установка приложения Gemini by kaiser v3.2...
 "%ADB%" install -r -d "%APK%"
 if errorlevel 1 (
     echo [!] Обычная установка не удалась, пробуем установку для user 0...

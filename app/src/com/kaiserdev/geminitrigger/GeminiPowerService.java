@@ -2,16 +2,22 @@ package com.kaiserdev.geminitrigger;
 
 import android.accessibilityservice.AccessibilityService;
 import android.content.ComponentName;
+import android.content.ContentResolver;
 import android.content.Context;
 import android.content.Intent;
+import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.graphics.Bitmap;
 import android.graphics.ColorSpace;
 import android.hardware.HardwareBuffer;
 import android.net.Uri;
+import android.os.Build;
+import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.SystemClock;
+import android.os.VibrationEffect;
+import android.os.Vibrator;
 import android.provider.Settings;
 import android.view.Display;
 import android.view.accessibility.AccessibilityEvent;
@@ -35,6 +41,14 @@ public class GeminiPowerService extends AccessibilityService {
     private String lastAssistantEvent = "none";
     private final Handler handler = new Handler(Looper.getMainLooper());
 
+    // Settings Keys
+    public static final String PREFS_NAME = "gemini_trigger_prefs";
+    public static final String PREF_HAPTIC = "pref_haptic";
+    public static final String PREF_WALLET_CTS = "pref_wallet_cts";
+    public static final String PREF_AUTO_TTS = "pref_auto_tts";
+    public static final String PREF_DOUBLE_POWER_MENU = "pref_double_power_menu";
+    public static final String PREF_VTOUCH_CTS = "pref_vtouch_cts";
+
     // Voice session tracking (auto-mic after reboot + auto-TTS speech output)
     private long voiceSessionStartTime = 0L;
     private boolean micConfirmedActive = false;
@@ -49,6 +63,42 @@ public class GeminiPowerService extends AccessibilityService {
     private static final String ID_TEXT_QUERY = "com.google.android.googlequicksearchbox:id/assistant_robin_floaty_single_line_query";
     private static final String ID_MIC_BUTTON = "com.google.android.googlequicksearchbox:id/assistant_robin_mic_button";
     private static final String ID_PLAYBACK_ICON = "com.google.android.googlequicksearchbox:id/assistant_robin_playback_icon";
+
+    public static SharedPreferences getPrefs(Context context) {
+        return context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
+    }
+
+    public static boolean isPrefEnabled(Context context, String key, boolean def) {
+        try {
+            return getPrefs(context).getBoolean(key, def);
+        } catch (Throwable ignored) {
+            return def;
+        }
+    }
+
+    public static void setPrefEnabled(Context context, String key, boolean val) {
+        try {
+            getPrefs(context).edit().putBoolean(key, val).apply();
+        } catch (Throwable ignored) {
+        }
+    }
+
+    public static void performHaptic(Context context) {
+        if (!isPrefEnabled(context, PREF_HAPTIC, true)) {
+            return;
+        }
+        try {
+            Vibrator v = (Vibrator) context.getSystemService(Context.VIBRATOR_SERVICE);
+            if (v != null && v.hasVibrator()) {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    v.vibrate(VibrationEffect.createPredefined(VibrationEffect.EFFECT_CLICK));
+                } else {
+                    v.vibrate(25);
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+    }
 
     private static boolean isVivoCopilotPackage(String pkg) {
         if (pkg == null) {
@@ -98,54 +148,29 @@ public class GeminiPowerService extends AccessibilityService {
     }
 
     private void checkVoiceSessionProgress(long elapsed) {
-        if (voiceSessionStartTime == 0L || elapsed > 35000L) {
+        AccessibilityNodeInfo root = findGoogleQuickSearchBoxRoot();
+        if (root == null) {
             return;
         }
-
-        AccessibilityNodeInfo gsaRoot = findGoogleQuickSearchBoxRoot();
-        if (gsaRoot == null) {
-            // If FloatyActivity didn't appear on first cold launch right after reboot, retry once at ~520ms
-            if (elapsed >= 500L && elapsed <= 1800L && !retryLaunchDone && lastGeminiOpenTime != 0L) {
-                retryLaunchDone = true;
-                TriggerActivity.launchGeminiIntentOnly(this, false);
-            } else if (elapsed > 4500L) {
-                // Floaty window was closed by user
-                voiceSessionStartTime = 0L;
-                lastPlaybackStatus = "google_window_missing";
-            }
-            return;
-        }
-
         try {
-            inspectGoogleFloatyRoot(gsaRoot, elapsed);
-        } finally {
-            try {
-                gsaRoot.recycle();
-            } catch (Throwable ignored) {
+            if (!micConfirmedActive) {
+                inspectGoogleFloatyForMic(root, elapsed);
             }
+            inspectGoogleFloatyRoot(root, elapsed);
+        } finally {
+            root.recycle();
         }
     }
 
     private AccessibilityNodeInfo findGoogleQuickSearchBoxRoot() {
-        try {
-            AccessibilityNodeInfo active = getRootInActiveWindow();
-            if (active != null) {
-                CharSequence p = active.getPackageName();
-                if (p != null && GSA_PKG.equals(p.toString())) {
-                    return active;
-                }
-                active.recycle();
-            }
-        } catch (Throwable ignored) {
-        }
         try {
             List<AccessibilityWindowInfo> windows = getWindows();
             if (windows != null) {
                 for (AccessibilityWindowInfo w : windows) {
                     AccessibilityNodeInfo root = w.getRoot();
                     if (root != null) {
-                        CharSequence p = root.getPackageName();
-                        if (p != null && GSA_PKG.equals(p.toString())) {
+                        CharSequence pkg = root.getPackageName();
+                        if (pkg != null && GSA_PKG.equals(pkg.toString())) {
                             return root;
                         }
                         root.recycle();
@@ -154,35 +179,68 @@ public class GeminiPowerService extends AccessibilityService {
             }
         } catch (Throwable ignored) {
         }
+        try {
+            AccessibilityNodeInfo active = getRootInActiveWindow();
+            if (active != null) {
+                CharSequence pkg = active.getPackageName();
+                if (pkg != null && GSA_PKG.equals(pkg.toString())) {
+                    return active;
+                }
+                active.recycle();
+            }
+        } catch (Throwable ignored) {
+        }
         return null;
     }
 
-    private static boolean hasVisibleNodeWithId(AccessibilityNodeInfo root, String viewId) {
+    private void inspectGoogleFloatyForMic(AccessibilityNodeInfo root, long elapsed) {
+        if (hasVisibleNodeWithId(root, ID_VOICE_WAVE)) {
+            micConfirmedActive = true;
+            lastPlaybackStatus = "mic_listening";
+            return;
+        }
+
+        if (elapsed >= 1100L && hasVisibleNodeWithId(root, ID_TEXT_QUERY)) {
+            if (!micAutoClicked) {
+                if (clickNodeWithId(root, ID_MIC_BUTTON)) {
+                    micAutoClicked = true;
+                    micConfirmedActive = true;
+                    lastPlaybackStatus = "mic_auto_clicked";
+                    return;
+                }
+            }
+            if (!retryLaunchDone && elapsed >= 1800L) {
+                retryLaunchDone = true;
+                TriggerActivity.launchGeminiIntentOnly(this, false);
+            }
+        }
+    }
+
+    private boolean hasVisibleNodeWithId(AccessibilityNodeInfo root, String viewId) {
         try {
-            List<AccessibilityNodeInfo> list = root.findAccessibilityNodeInfosByViewId(viewId);
-            if (list != null) {
-                boolean found = false;
-                for (AccessibilityNodeInfo n : list) {
+            List<AccessibilityNodeInfo> nodes = root.findAccessibilityNodeInfosByViewId(viewId);
+            if (nodes != null) {
+                for (AccessibilityNodeInfo n : nodes) {
                     if (n != null) {
-                        if (n.isVisibleToUser()) {
-                            found = true;
-                        }
+                        boolean ok = n.isVisibleToUser();
                         n.recycle();
+                        if (ok) {
+                            return true;
+                        }
                     }
                 }
-                return found;
             }
         } catch (Throwable ignored) {
         }
         return false;
     }
 
-    private static boolean clickNodeWithId(AccessibilityNodeInfo root, String viewId) {
+    private boolean clickNodeWithId(AccessibilityNodeInfo root, String viewId) {
         try {
-            List<AccessibilityNodeInfo> list = root.findAccessibilityNodeInfosByViewId(viewId);
-            if (list != null) {
+            List<AccessibilityNodeInfo> nodes = root.findAccessibilityNodeInfosByViewId(viewId);
+            if (nodes != null) {
                 boolean clicked = false;
-                for (AccessibilityNodeInfo n : list) {
+                for (AccessibilityNodeInfo n : nodes) {
                     if (n != null) {
                         if (!clicked && n.isVisibleToUser() && n.isEnabled()) {
                             AccessibilityNodeInfo target = n;
@@ -204,6 +262,10 @@ public class GeminiPowerService extends AccessibilityService {
     }
 
     private void inspectGoogleFloatyRoot(AccessibilityNodeInfo root, long elapsed) {
+        if (!isPrefEnabled(this, PREF_AUTO_TTS, true)) {
+            return;
+        }
+
         // Once the user has spoken and Gemini renders the response card (ID_PLAYBACK_ICON becomes visible),
         // automatically click the speaker/playback icon if TTS is not already playing out loud!
         if (!playbackAutoClicked && elapsed >= 1400L && elapsed <= 35000L) {
@@ -258,6 +320,7 @@ public class GeminiPowerService extends AccessibilityService {
     public static boolean showSystemPowerDialog() {
         GeminiPowerService svc = instance;
         if (svc != null) {
+            performHaptic(svc);
             return svc.performGlobalAction(GLOBAL_ACTION_POWER_DIALOG);
         }
         return false;
@@ -273,7 +336,30 @@ public class GeminiPowerService extends AccessibilityService {
         }
     }
 
+    public static boolean isShizukuRunning(Context context) {
+        try {
+            Uri uri = Uri.parse("content://moe.shizuku.privileged.api.shizuku");
+            ContentResolver cr = context.getContentResolver();
+            Bundle res = cr.call(uri, "ping", null, null);
+            return res != null;
+        } catch (Throwable ignored) {
+            return false;
+        }
+    }
+
+    public static boolean isShizukuInstalled(Context context) {
+        try {
+            PackageManager pm = context.getPackageManager();
+            pm.getPackageInfo("moe.shizuku.privileged.api", 0);
+            return true;
+        } catch (Throwable ignored) {
+            return false;
+        }
+    }
+
     public static void triggerCircleToSearch(final Context context) {
+        performHaptic(context);
+
         // 1. TOP PRIORITY: Launch native Circle to Search (MiCTS) with original Google shimmer
         try {
             PackageManager pm = context.getPackageManager();
@@ -319,22 +405,20 @@ public class GeminiPowerService extends AccessibilityService {
                                     fos.close();
                                     swBmp.recycle();
 
-                                    Uri uri = ScreenshotProvider.getScreenshotUri();
-                                    Intent lens = new Intent(Intent.ACTION_SEND);
-                                    lens.setComponent(new ComponentName(
-                                            "com.google.android.googlequicksearchbox",
-                                            "com.google.android.apps.search.lens.LensShareEntryPointActivity"
-                                    ));
-                                    lens.setType("image/jpeg");
-                                    lens.putExtra(Intent.EXTRA_STREAM, uri);
-                                    lens.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION
-                                            | Intent.FLAG_ACTIVITY_NEW_TASK
-                                            | Intent.FLAG_ACTIVITY_CLEAR_TOP);
-                                    context.grantUriPermission("com.google.android.googlequicksearchbox", uri, Intent.FLAG_GRANT_READ_URI_PERMISSION);
-                                    context.startActivity(lens);
+                                    Uri imageUri = ScreenshotProvider.getScreenshotUri();
+                                    Intent intent = new Intent(Intent.ACTION_VIEW);
+                                    intent.setDataAndType(imageUri, "image/jpeg");
+                                    intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
+                                    intent.setPackage(GSA_PKG);
+                                    try {
+                                        context.startActivity(intent);
+                                    } catch (Throwable t) {
+                                        Intent generic = new Intent(Intent.ACTION_VIEW);
+                                        generic.setDataAndType(imageUri, "image/jpeg");
+                                        generic.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
+                                        context.startActivity(generic);
+                                    }
                                 }
-                            } else {
-                                hb.close();
                             }
                         } catch (Throwable ignored) {
                         }
@@ -385,8 +469,8 @@ public class GeminiPowerService extends AccessibilityService {
             }
         }
 
-                // Intercept Vivo Wallet (Double Click Power Button) -> Global Circle to Search (MiCTS)
-        if (pkg.contains("vivo.wallet") && !cls.contains("Setting") && !cls.contains("CardBagSetting")) {
+        // Intercept Vivo Wallet (Double Click Power Button) -> Global Circle to Search (MiCTS)
+        if (isPrefEnabled(this, PREF_WALLET_CTS, true) && pkg.contains("vivo.wallet") && !cls.contains("Setting") && !cls.contains("CardBagSetting")) {
             long now = SystemClock.elapsedRealtime();
             if (now - lastCtsTriggerTime >= 1200L) {
                 lastCtsTriggerTime = now;
@@ -402,7 +486,7 @@ public class GeminiPowerService extends AccessibilityService {
         }
 
         // Intercept Vivo's Chinese VTouch screen recognition -> Global Google Circle to Search
-        if ("com.vivo.vtouch".equals(pkg) && !cls.contains("Setting") && !cls.contains("FAQ")) {
+        if (isPrefEnabled(this, PREF_VTOUCH_CTS, true) && "com.vivo.vtouch".equals(pkg) && !cls.contains("Setting") && !cls.contains("FAQ")) {
             long now = SystemClock.elapsedRealtime();
             if (now - lastCtsTriggerTime >= 1500L) {
                 lastCtsTriggerTime = now;
@@ -459,13 +543,13 @@ public class GeminiPowerService extends AccessibilityService {
 
             // If user holds Power Button a SECOND time within 5 seconds of opening Gemini,
             // open the native System Power Menu (Reboot / Power Off)!
-            if (now - lastGeminiOpenTime < 5000L) {
+            if (isPrefEnabled(this, PREF_DOUBLE_POWER_MENU, true) && now - lastGeminiOpenTime < 5000L) {
                 lastGeminiOpenTime = 0L;
                 voiceSessionStartTime = 0L;
                 handler.postDelayed(new Runnable() {
                     @Override
                     public void run() {
-                        performGlobalAction(GLOBAL_ACTION_POWER_DIALOG);
+                        showSystemPowerDialog();
                     }
                 }, 120L);
                 return;
@@ -487,13 +571,17 @@ public class GeminiPowerService extends AccessibilityService {
 
     @Override
     protected void dump(FileDescriptor fd, PrintWriter writer, String[] args) {
-        writer.println("Gemini by kaiser v3.1 Official");
+        writer.println("Gemini by kaiser v3.2 Official");
         writer.println("assistantTriggerCount=" + assistantTriggerCount);
         writer.println("lastAssistantEvent=" + lastAssistantEvent);
         writer.println("voiceSessionActive=" + (voiceSessionStartTime != 0L));
         writer.println("lastPlaybackStatus=" + lastPlaybackStatus);
         writer.println("lastPlaybackDescription=" + lastPlaybackDescription);
         writer.println("mictsInstalled=" + isMictsInstalled(this));
+        writer.println("shizukuRunning=" + isShizukuRunning(this));
+        writer.println("hapticEnabled=" + isPrefEnabled(this, PREF_HAPTIC, true));
+        writer.println("walletCtsEnabled=" + isPrefEnabled(this, PREF_WALLET_CTS, true));
+        writer.println("autoTtsEnabled=" + isPrefEnabled(this, PREF_AUTO_TTS, true));
         writer.println("writeSystemSettings=" + Settings.System.canWrite(this));
         TriggerActivity.dumpState(writer);
     }

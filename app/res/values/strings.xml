@@ -4,6 +4,8 @@
     <string name="cts_name">Circle to Search</string>
     <string name="tile_name">Gemini Оверлей</string>
     <string name="cts_tile_name">Circle to Search</string>
+    <string name="process_text_label">Спросить у Gemini</string>
+    <string name="share_label">Отправить в Gemini</string>
     <string name="a11y_name">Gemini &amp; Circle to Search by kaiser</string>
-    <string name="a11y_desc">Перехватывает кнопку питания (0.5 сек) для вызова голосового оверлея Google Gemini, двойное зажатие для меню выключения, а также китайский VTouch для запуска глобального Google Поиска по экрану (Circle to Search). Разработано kaiser и Antigravity AI специально для 4PDA.</string>
+    <string name="a11y_desc">Перехватывает кнопку питания (0.5 сек) для вызова голосового оверлея Google Gemini, двойное нажатие для Circle to Search (MiCTS), двойное зажатие для меню выключения, а также китайский VTouch для запуска глобального Google Поиска по экрану. Разработано kaiser и Antigravity AI специально для 4PDA.</string>
 </resources>
