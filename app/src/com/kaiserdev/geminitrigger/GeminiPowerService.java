@@ -263,31 +263,30 @@ public class GeminiPowerService extends AccessibilityService {
         return false;
     }
 
-    public static boolean isMictsActive(Context context) {
+    public static boolean isMictsInstalled(Context context) {
         try {
             PackageManager pm = context.getPackageManager();
             pm.getPackageInfo("com.parallelc.micts", 0);
-            String enabled = Settings.Secure.getString(context.getContentResolver(), Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES);
-            return enabled != null && enabled.contains("com.parallelc.micts");
+            return true;
         } catch (Throwable ignored) {
             return false;
         }
     }
 
     public static void triggerCircleToSearch(final Context context) {
-        // 1. If MiCTS is installed AND actively enabled in Accessibility Services, launch it for shimmer overlay
-        if (isMictsActive(context)) {
-            try {
-                Intent micts = new Intent();
-                micts.setComponent(new ComponentName("com.parallelc.micts", "com.parallelc.micts.ui.activity.MainActivity"));
-                micts.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
-                context.startActivity(micts);
-                return;
-            } catch (Throwable ignored) {
-            }
+        // 1. TOP PRIORITY: Launch native Circle to Search (MiCTS) with original Google shimmer
+        try {
+            PackageManager pm = context.getPackageManager();
+            pm.getPackageInfo("com.parallelc.micts", 0);
+            Intent micts = new Intent();
+            micts.setComponent(new ComponentName("com.parallelc.micts", "com.parallelc.micts.ui.activity.MainActivity"));
+            micts.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
+            context.startActivity(micts);
+            return;
+        } catch (Throwable ignored) {
         }
 
-        // 2. Standalone fallback (works 100% reliably without MiCTS or Shizuku): in-memory screenshot to Google Lens
+        // 2. Standalone fallback (only if MiCTS is not installed): Google Lens Screen Search
         triggerLensScreenSearch(context);
     }
 
@@ -478,7 +477,7 @@ public class GeminiPowerService extends AccessibilityService {
         writer.println("voiceSessionActive=" + (voiceSessionStartTime != 0L));
         writer.println("lastPlaybackStatus=" + lastPlaybackStatus);
         writer.println("lastPlaybackDescription=" + lastPlaybackDescription);
-        writer.println("mictsActive=" + isMictsActive(this));
+        writer.println("mictsInstalled=" + isMictsInstalled(this));
         writer.println("writeSystemSettings=" + Settings.System.canWrite(this));
         TriggerActivity.dumpState(writer);
     }
