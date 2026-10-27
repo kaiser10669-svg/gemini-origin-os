@@ -49,7 +49,7 @@ public class GeminiPowerService extends AccessibilityService {
     public static final String PREF_DOUBLE_POWER_MENU = "pref_double_power_menu";
     public static final String PREF_VTOUCH_CTS = "pref_vtouch_cts";
 
-    // Voice session tracking (auto-mic after reboot + auto-TTS speech output)
+    // Voice session tracking (instant mic trigger + auto-TTS speech output)
     private long voiceSessionStartTime = 0L;
     private boolean micConfirmedActive = false;
     private boolean micAutoClicked = false;
@@ -62,6 +62,7 @@ public class GeminiPowerService extends AccessibilityService {
     private static final String ID_VOICE_WAVE = "com.google.android.googlequicksearchbox:id/assistant_robin_floaty_single_line_voice_wave_view";
     private static final String ID_TEXT_QUERY = "com.google.android.googlequicksearchbox:id/assistant_robin_floaty_single_line_query";
     private static final String ID_MIC_BUTTON = "com.google.android.googlequicksearchbox:id/assistant_robin_mic_button";
+    private static final String ID_MIC_CONTAINER = "com.google.android.googlequicksearchbox:id/assistant_robin_floaty_single_line_mic_button";
     private static final String ID_PLAYBACK_ICON = "com.google.android.googlequicksearchbox:id/assistant_robin_playback_icon";
 
     public static SharedPreferences getPrefs(Context context) {
@@ -125,7 +126,9 @@ public class GeminiPowerService extends AccessibilityService {
             }
             checkVoiceSessionProgress(elapsed);
             if (voiceSessionStartTime != 0L && !playbackAutoClicked) {
-                handler.postDelayed(this, 500L);
+                // High frequency polling (50ms) until mic is active, then relaxed (350ms) for TTS
+                long nextDelay = !micConfirmedActive ? 50L : 350L;
+                handler.postDelayed(this, nextDelay);
             }
         }
     };
@@ -144,7 +147,8 @@ public class GeminiPowerService extends AccessibilityService {
         svc.lastPlaybackDescription = "";
 
         svc.handler.removeCallbacks(svc.sessionWatcherRunnable);
-        svc.handler.postDelayed(svc.sessionWatcherRunnable, 260L);
+        // Start watching immediately at 40ms to catch FloatyActivity on first frame
+        svc.handler.postDelayed(svc.sessionWatcherRunnable, 40L);
     }
 
     private void checkVoiceSessionProgress(long elapsed) {
@@ -194,26 +198,63 @@ public class GeminiPowerService extends AccessibilityService {
     }
 
     private void inspectGoogleFloatyForMic(AccessibilityNodeInfo root, long elapsed) {
+        // If the animated voice wave is already visible, Gemini is listening!
         if (hasVisibleNodeWithId(root, ID_VOICE_WAVE)) {
             micConfirmedActive = true;
             lastPlaybackStatus = "mic_listening";
             return;
         }
 
-        if (elapsed >= 1100L && hasVisibleNodeWithId(root, ID_TEXT_QUERY)) {
-            if (!micAutoClicked) {
-                if (clickNodeWithId(root, ID_MIC_BUTTON)) {
-                    micAutoClicked = true;
-                    micConfirmedActive = true;
-                    lastPlaybackStatus = "mic_auto_clicked";
-                    return;
-                }
-            }
-            if (!retryLaunchDone && elapsed >= 1800L) {
-                retryLaunchDone = true;
-                TriggerActivity.launchGeminiIntentOnly(this, false);
+        // INSTANT ACTIVATION: If Google Floaty opened in text mode or mic is idle,
+        // click the mic button IMMEDIATELY on the very first frame without any delay!
+        if (!micAutoClicked && (hasVisibleNodeWithId(root, ID_MIC_BUTTON) || hasVisibleNodeWithId(root, ID_MIC_CONTAINER) || hasVisibleNodeWithId(root, ID_TEXT_QUERY))) {
+            if (clickMicButton(root)) {
+                micAutoClicked = true;
+                micConfirmedActive = true;
+                lastPlaybackStatus = "mic_auto_clicked_instant";
+                return;
             }
         }
+
+        if (!retryLaunchDone && elapsed >= 1200L && !micConfirmedActive) {
+            retryLaunchDone = true;
+            TriggerActivity.launchGeminiIntentOnly(this, false);
+        }
+    }
+
+    private boolean clickMicButton(AccessibilityNodeInfo root) {
+        if (clickNodeWithId(root, ID_MIC_BUTTON)) {
+            return true;
+        }
+        if (clickNodeWithId(root, ID_MIC_CONTAINER)) {
+            return true;
+        }
+        try {
+            List<AccessibilityNodeInfo> list = root.findAccessibilityNodeInfosByText("Микрофон");
+            if (list != null) {
+                for (AccessibilityNodeInfo n : list) {
+                    if (n != null) {
+                        boolean ok = performClickOnNodeOrParent(n);
+                        n.recycle();
+                        if (ok) return true;
+                    }
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+        return false;
+    }
+
+    private boolean performClickOnNodeOrParent(AccessibilityNodeInfo node) {
+        if (node == null) return false;
+        AccessibilityNodeInfo curr = node;
+        while (curr != null) {
+            if (curr.isClickable() && curr.isEnabled()) {
+                return curr.performAction(AccessibilityNodeInfo.ACTION_CLICK);
+            }
+            curr = curr.getParent();
+        }
+        return false;
     }
 
     private boolean hasVisibleNodeWithId(AccessibilityNodeInfo root, String viewId) {
@@ -268,7 +309,7 @@ public class GeminiPowerService extends AccessibilityService {
 
         // Once the user has spoken and Gemini renders the response card (ID_PLAYBACK_ICON becomes visible),
         // automatically click the speaker/playback icon if TTS is not already playing out loud!
-        if (!playbackAutoClicked && elapsed >= 1400L && elapsed <= 35000L) {
+        if (!playbackAutoClicked && elapsed >= 1200L && elapsed <= 35000L) {
             if (hasVisibleNodeWithId(root, ID_PLAYBACK_ICON)) {
                 if (hasVisibleNodeWithId(root, ID_VOICE_WAVE)) {
                     lastPlaybackStatus = "mic_active";
@@ -312,7 +353,7 @@ public class GeminiPowerService extends AccessibilityService {
                         } catch (Throwable ignored) {
                         }
                     }
-                }, 350L);
+                }, 300L);
             }
         }
     }
@@ -461,7 +502,7 @@ public class GeminiPowerService extends AccessibilityService {
         CharSequence clsCs = event.getClassName();
         String cls = clsCs != null ? clsCs.toString() : "";
 
-        // Monitor Google FloatyActivity during active voice session for auto-mic (after reboot) and auto-TTS playback
+        // Monitor Google FloatyActivity during active voice session for auto-mic and auto-TTS playback
         if (GSA_PKG.equals(pkg) && voiceSessionStartTime != 0L) {
             long elapsed = SystemClock.elapsedRealtime() - voiceSessionStartTime;
             if (elapsed <= 35000L) {
@@ -556,12 +597,13 @@ public class GeminiPowerService extends AccessibilityService {
             }
 
             lastGeminiOpenTime = now;
+            // Immediate handoff to Gemini (50ms) so mic starts with zero latency
             handler.postDelayed(new Runnable() {
                 @Override
                 public void run() {
                     TriggerActivity.launchGeminiOverlay(GeminiPowerService.this);
                 }
-            }, 140L);
+            }, 50L);
         }
     }
 
