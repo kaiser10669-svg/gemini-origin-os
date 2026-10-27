@@ -13,6 +13,9 @@ import android.graphics.ColorSpace;
 import android.graphics.Path;
 import android.graphics.Rect;
 import android.hardware.HardwareBuffer;
+import android.media.AudioManager;
+import android.media.AudioRecordingConfiguration;
+import android.media.MediaRecorder;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
@@ -22,6 +25,8 @@ import android.os.SystemClock;
 import android.os.VibrationEffect;
 import android.os.Vibrator;
 import android.provider.Settings;
+import android.util.DisplayMetrics;
+import android.util.Log;
 import android.view.Display;
 import android.view.accessibility.AccessibilityEvent;
 import android.view.accessibility.AccessibilityNodeInfo;
@@ -55,10 +60,13 @@ public class GeminiPowerService extends AccessibilityService {
     // Voice session tracking (mic trigger + auto-TTS speech output)
     private long voiceSessionStartTime = 0L;
     private boolean micConfirmedActive = false;
-    private boolean micAutoClicked = false;
+    private int micAttemptCount = 0;
     private boolean playbackAutoClicked = false;
     private String lastPlaybackStatus = "idle";
     private String lastPlaybackDescription = "";
+
+    private AudioManager audioManager;
+    private AudioManager.AudioRecordingCallback recordingCallback;
 
     private static final String GSA_PKG = "com.google.android.googlequicksearchbox";
     private static final String ID_VOICE_WAVE = "com.google.android.googlequicksearchbox:id/assistant_robin_floaty_single_line_voice_wave_view";
@@ -113,10 +121,63 @@ public class GeminiPowerService extends AccessibilityService {
                 || "com.vivo.ai.copilot.shortcut.component".equals(pkg);
     }
 
+    private void setupAudioRecordingMonitor() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            try {
+                audioManager = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
+                if (audioManager != null) {
+                    recordingCallback = new AudioManager.AudioRecordingCallback() {
+                        @Override
+                        public void onRecordingConfigChanged(List<AudioRecordingConfiguration> configs) {
+                            super.onRecordingConfigChanged(configs);
+                            if (voiceSessionStartTime != 0L && !micConfirmedActive) {
+                                if (isAudioRecordingActive(configs)) {
+                                    micConfirmedActive = true;
+                                    lastPlaybackStatus = "mic_listening_hardware";
+                                    performHaptic(GeminiPowerService.this);
+                                    handler.removeCallbacks(micActivationRunnable);
+                                }
+                            }
+                        }
+                    };
+                    audioManager.registerAudioRecordingCallback(recordingCallback, handler);
+                }
+            } catch (Throwable ignored) {
+            }
+        }
+    }
+
+    private boolean checkIfRecordingActive() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N && audioManager != null) {
+            try {
+                List<AudioRecordingConfiguration> configs = audioManager.getActiveRecordingConfigurations();
+                return isAudioRecordingActive(configs);
+            } catch (Throwable ignored) {
+            }
+        }
+        return false;
+    }
+
+    private boolean isAudioRecordingActive(List<AudioRecordingConfiguration> configs) {
+        if (configs == null || configs.isEmpty()) {
+            return false;
+        }
+        for (AudioRecordingConfiguration c : configs) {
+            if (c != null) {
+                int src = c.getClientAudioSource();
+                if (src == MediaRecorder.AudioSource.VOICE_RECOGNITION 
+                        || src == MediaRecorder.AudioSource.MIC) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
     private final Runnable micActivationRunnable = new Runnable() {
         @Override
         public void run() {
-            if (voiceSessionStartTime == 0L || micAutoClicked || micConfirmedActive) {
+            if (voiceSessionStartTime == 0L || micConfirmedActive) {
                 return;
             }
             long elapsed = SystemClock.elapsedRealtime() - voiceSessionStartTime;
@@ -124,29 +185,29 @@ public class GeminiPowerService extends AccessibilityService {
                 return;
             }
 
-            AccessibilityNodeInfo root = findGoogleQuickSearchBoxRoot();
-            if (root != null) {
-                try {
-                    if (hasVisibleNodeWithId(root, ID_VOICE_WAVE)) {
-                        micConfirmedActive = true;
-                        lastPlaybackStatus = "mic_listening";
-                        performHaptic(GeminiPowerService.this);
-                        return;
-                    }
-                    if (hasVisibleNodeWithId(root, ID_MIC_BUTTON) || hasVisibleNodeWithId(root, ID_TEXT_QUERY)) {
-                        if (tapNodeWithId(root, ID_MIC_BUTTON)) {
-                            micAutoClicked = true;
-                            lastPlaybackStatus = "mic_tapped_fast";
-                            return;
-                        }
-                    }
-                } finally {
-                    root.recycle();
-                }
+            // Check if audio recording is already active
+            if (checkIfRecordingActive()) {
+                micConfirmedActive = true;
+                lastPlaybackStatus = "mic_listening_confirmed";
+                performHaptic(GeminiPowerService.this);
+                return;
             }
 
-            if (!micAutoClicked && !micConfirmedActive && voiceSessionStartTime != 0L) {
-                handler.postDelayed(this, 60L);
+            // Calculate precise physical coordinates of the microphone button on Gemini card
+            DisplayMetrics dm = getResources().getDisplayMetrics();
+            int screenWidth = dm.widthPixels;
+            int screenHeight = dm.heightPixels;
+            // Physical button center on Vivo X300 Ultra (1260x2772: 867, 2625)
+            int micX = (int) (screenWidth * 0.6881f);
+            int micY = (int) (screenHeight * 0.94697f);
+
+            micAttemptCount++;
+            lastPlaybackStatus = "mic_tap_phys_" + micAttemptCount;
+            tapCoordinates(micX, micY);
+
+            // Retry after 260ms if still not active and attempt count < 3
+            if (micAttemptCount < 3 && !micConfirmedActive && voiceSessionStartTime != 0L) {
+                handler.postDelayed(this, 260L);
             }
         }
     };
@@ -177,18 +238,18 @@ public class GeminiPowerService extends AccessibilityService {
         }
         svc.voiceSessionStartTime = SystemClock.elapsedRealtime();
         svc.micConfirmedActive = false;
-        svc.micAutoClicked = false;
+        svc.micAttemptCount = 0;
         svc.playbackAutoClicked = false;
         svc.lastPlaybackStatus = "waiting_for_google_window";
         svc.lastPlaybackDescription = "";
 
-        // Fast mic activation ticker (every 60ms, stops as soon as mic tapped)
+        // Physical mic activation ticker (starts at 290ms when Floaty card has slid up)
         svc.handler.removeCallbacks(svc.micActivationRunnable);
-        svc.handler.postDelayed(svc.micActivationRunnable, 100L);
+        svc.handler.postDelayed(svc.micActivationRunnable, 290L);
 
         // Relaxed watcher for TTS answer playback
         svc.handler.removeCallbacks(svc.sessionWatcherRunnable);
-        svc.handler.postDelayed(svc.sessionWatcherRunnable, 1500L);
+        svc.handler.postDelayed(svc.sessionWatcherRunnable, 2000L);
     }
 
     private void checkVoiceSessionProgress(long elapsed) {
@@ -197,7 +258,7 @@ public class GeminiPowerService extends AccessibilityService {
             return;
         }
         try {
-            if (!micAutoClicked && !micConfirmedActive) {
+            if (!micConfirmedActive) {
                 inspectGoogleFloatyForMic(root, elapsed);
             }
             inspectGoogleFloatyRoot(root, elapsed);
@@ -245,12 +306,11 @@ public class GeminiPowerService extends AccessibilityService {
             return;
         }
 
-        // Tap microphone ONCE as soon as the Robin floaty view has settled
-        if (elapsed >= 150L && !micAutoClicked) {
+        if (elapsed >= 220L && !micConfirmedActive) {
             if (hasVisibleNodeWithId(root, ID_MIC_BUTTON) || hasVisibleNodeWithId(root, ID_TEXT_QUERY)) {
+                micAttemptCount++;
                 if (tapNodeWithId(root, ID_MIC_BUTTON)) {
-                    micAutoClicked = true;
-                    lastPlaybackStatus = "mic_tapped_clean";
+                    lastPlaybackStatus = "mic_tapped_event_" + micAttemptCount;
                 }
             }
         }
@@ -284,12 +344,14 @@ public class GeminiPowerService extends AccessibilityService {
                         if (n.isVisibleToUser() && n.isEnabled()) {
                             Rect bounds = new Rect();
                             n.getBoundsInScreen(bounds);
+                            n.performAction(AccessibilityNodeInfo.ACTION_CLICK);
                             n.recycle();
                             int cx = bounds.centerX();
                             int cy = bounds.centerY();
                             if (cx > 0 && cy > 0 && bounds.width() > 10 && bounds.height() > 10) {
-                                return tapCoordinates(cx, cy);
+                                tapCoordinates(cx, cy);
                             }
+                            return true;
                         } else {
                             n.recycle();
                         }
@@ -304,12 +366,14 @@ public class GeminiPowerService extends AccessibilityService {
             if (micDesc != null) {
                 Rect bounds = new Rect();
                 micDesc.getBoundsInScreen(bounds);
+                micDesc.performAction(AccessibilityNodeInfo.ACTION_CLICK);
                 micDesc.recycle();
                 int cx = bounds.centerX();
                 int cy = bounds.centerY();
                 if (cx > 0 && cy > 0 && bounds.width() > 10 && bounds.height() > 10) {
-                    return tapCoordinates(cx, cy);
+                    tapCoordinates(cx, cy);
                 }
+                return true;
             }
         } catch (Throwable ignored) {
         }
@@ -352,9 +416,9 @@ public class GeminiPowerService extends AccessibilityService {
             try {
                 Path clickPath = new Path();
                 clickPath.moveTo(x, y);
-                clickPath.lineTo(x, y);
+                clickPath.lineTo(x, y + 2);
                 GestureDescription.StrokeDescription stroke =
-                        new GestureDescription.StrokeDescription(clickPath, 0, 50);
+                        new GestureDescription.StrokeDescription(clickPath, 0, 40);
                 GestureDescription.Builder builder = new GestureDescription.Builder();
                 builder.addStroke(stroke);
                 return dispatchGesture(builder.build(), new AccessibilityService.GestureResultCallback() {
@@ -550,6 +614,7 @@ public class GeminiPowerService extends AccessibilityService {
     protected void onServiceConnected() {
         super.onServiceConnected();
         instance = this;
+        setupAudioRecordingMonitor();
         TriggerActivity.ensureSystemSettingsIfPermitted(this);
     }
 
@@ -557,6 +622,12 @@ public class GeminiPowerService extends AccessibilityService {
     public void onDestroy() {
         handler.removeCallbacksAndMessages(null);
         voiceSessionStartTime = 0L;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N && audioManager != null && recordingCallback != null) {
+            try {
+                audioManager.unregisterAudioRecordingCallback(recordingCallback);
+            } catch (Throwable ignored) {
+            }
+        }
         if (instance == this) {
             instance = null;
         }
@@ -574,13 +645,10 @@ public class GeminiPowerService extends AccessibilityService {
         CharSequence clsCs = event.getClassName();
         String cls = clsCs != null ? clsCs.toString() : "";
 
-        // Monitor Google FloatyActivity during active voice session for auto-mic and auto-TTS playback
+        // Monitor Google FloatyActivity during active voice session for auto-TTS playback
         if (GSA_PKG.equals(pkg) && voiceSessionStartTime != 0L) {
             long elapsed = SystemClock.elapsedRealtime() - voiceSessionStartTime;
-            if (!micAutoClicked && !micConfirmedActive && elapsed <= 2500L) {
-                handler.removeCallbacks(micActivationRunnable);
-                micActivationRunnable.run();
-            } else if (elapsed <= 35000L) {
+            if (elapsed <= 35000L) {
                 checkVoiceSessionProgress(elapsed);
             }
         }
@@ -619,27 +687,15 @@ public class GeminiPowerService extends AccessibilityService {
 
         boolean matched = isVivoCopilotPackage(pkg);
 
-        if (!matched && event.getEventType() == AccessibilityEvent.TYPE_WINDOWS_CHANGED) {
+        if (!matched && (pkg == null || pkg.isEmpty()) && event.getEventType() == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
             try {
-                List<AccessibilityWindowInfo> windows = getWindows();
-                if (windows != null) {
-                    for (AccessibilityWindowInfo w : windows) {
-                        CharSequence title = w.getTitle();
-                        if (title != null && title.toString().contains("BlueAI")) {
-                            matched = true;
-                            break;
-                        }
-                        AccessibilityNodeInfo root = w.getRoot();
-                        if (root != null) {
-                            CharSequence rootPkg = root.getPackageName();
-                            boolean isCopilot = rootPkg != null && isVivoCopilotPackage(rootPkg.toString());
-                            root.recycle();
-                            if (isCopilot) {
-                                matched = true;
-                                break;
-                            }
-                        }
+                AccessibilityNodeInfo root = getRootInActiveWindow();
+                if (root != null) {
+                    CharSequence rootPkg = root.getPackageName();
+                    if (rootPkg != null && isVivoCopilotPackage(rootPkg.toString())) {
+                        matched = true;
                     }
+                    root.recycle();
                 }
             } catch (Throwable ignored) {
             }
