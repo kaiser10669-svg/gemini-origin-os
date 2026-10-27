@@ -172,6 +172,27 @@ public class InfoActivity extends Activity {
         });
         root.addView(btnShutdown);
 
+                Button btnWallet = createButton("💳 Двойное нажатие питания -> Circle to Search", "#6B38FB");
+        btnWallet.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                try {
+                    Intent i = new Intent();
+                    i.setComponent(new ComponentName("com.vivo.wallet", "com.vivo.pay.swing.activity.ShortCutSettingActivity"));
+                    startActivity(i);
+                } catch (Throwable t) {
+                    try {
+                        Intent i2 = new Intent();
+                        i2.setComponent(new ComponentName("com.android.settings", "com.android.settings.Settings$PowerMenuSettingsActivity"));
+                        startActivity(i2);
+                    } catch (Throwable t2) {
+                        startActivity(new Intent(Settings.ACTION_SETTINGS));
+                    }
+                }
+            }
+        });
+        root.addView(btnWallet);
+
         Button btnBackTap = createButton("👆 Настроить Двойной тап по спинке (Back Tap)", "#1E293B");
         btnBackTap.setOnClickListener(new View.OnClickListener() {
             @Override

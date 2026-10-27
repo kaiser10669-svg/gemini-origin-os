@@ -20,6 +20,7 @@
         <package android:name="com.vivo.vtouch" />
         <package android:name="com.vivo.agent" />
         <package android:name="com.vivo.permissionmanager" />
+        <package android:name="com.vivo.wallet" />
     </queries>
 
     <application

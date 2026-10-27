@@ -385,6 +385,22 @@ public class GeminiPowerService extends AccessibilityService {
             }
         }
 
+                // Intercept Vivo Wallet (Double Click Power Button) -> Global Circle to Search (MiCTS)
+        if (pkg.contains("vivo.wallet") && !cls.contains("Setting") && !cls.contains("CardBagSetting")) {
+            long now = SystemClock.elapsedRealtime();
+            if (now - lastCtsTriggerTime >= 1200L) {
+                lastCtsTriggerTime = now;
+                performGlobalAction(GLOBAL_ACTION_BACK);
+                handler.postDelayed(new Runnable() {
+                    @Override
+                    public void run() {
+                        triggerCircleToSearch(GeminiPowerService.this);
+                    }
+                }, 80L);
+            }
+            return;
+        }
+
         // Intercept Vivo's Chinese VTouch screen recognition -> Global Google Circle to Search
         if ("com.vivo.vtouch".equals(pkg) && !cls.contains("Setting") && !cls.contains("FAQ")) {
             long now = SystemClock.elapsedRealtime();
