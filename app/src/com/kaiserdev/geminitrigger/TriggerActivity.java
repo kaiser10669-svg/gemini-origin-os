@@ -27,7 +27,6 @@ public class TriggerActivity extends Activity {
             Settings.Secure.putInt(cr, "vivo.assistant.jovi.switch", 1);
             Settings.Secure.putInt(cr, "vivo_jovi_power_wakeup_switch", 1);
             Settings.Secure.putInt(cr, "copilot_voicewakeup_feedback", 0);
-            Settings.Secure.putInt(cr, "setting_voice_mode", 2);
             Settings.Global.putInt(cr, "power_button_long_press", 5);
             Settings.Global.putInt(cr, "system_navigation_wake_up_switch", 1);
 
@@ -35,6 +34,8 @@ public class TriggerActivity extends Activity {
                 if (Settings.System.canWrite(context)) {
                     Settings.System.putInt(cr, "vivo_jovi_power_wakeup_switch", 1);
                     Settings.System.putInt(cr, "voicewakeup_switch", 1);
+                    Settings.System.putInt(cr, "wakeup_enhancement_switch", 1);
+                    Settings.System.putInt(cr, "wakeup_enhance_enabled", 1);
                 }
             } catch (Throwable ignored) {
             }
