@@ -1,6 +1,7 @@
 package com.kaiserdev.geminitrigger;
 
 import android.accessibilityservice.AccessibilityService;
+import android.accessibilityservice.GestureDescription;
 import android.content.ComponentName;
 import android.content.ContentResolver;
 import android.content.Context;
@@ -9,6 +10,8 @@ import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.graphics.Bitmap;
 import android.graphics.ColorSpace;
+import android.graphics.Path;
+import android.graphics.Rect;
 import android.hardware.HardwareBuffer;
 import android.net.Uri;
 import android.os.Build;
@@ -49,12 +52,13 @@ public class GeminiPowerService extends AccessibilityService {
     public static final String PREF_DOUBLE_POWER_MENU = "pref_double_power_menu";
     public static final String PREF_VTOUCH_CTS = "pref_vtouch_cts";
 
-    // Voice session tracking (instant mic trigger + auto-TTS speech output)
+    // Voice session tracking (mic trigger + auto-TTS speech output)
     private long voiceSessionStartTime = 0L;
     private boolean micConfirmedActive = false;
     private boolean micAutoClicked = false;
     private boolean playbackAutoClicked = false;
     private boolean retryLaunchDone = false;
+    private boolean retryTapDone = false;
     private String lastPlaybackStatus = "idle";
     private String lastPlaybackDescription = "";
 
@@ -62,7 +66,6 @@ public class GeminiPowerService extends AccessibilityService {
     private static final String ID_VOICE_WAVE = "com.google.android.googlequicksearchbox:id/assistant_robin_floaty_single_line_voice_wave_view";
     private static final String ID_TEXT_QUERY = "com.google.android.googlequicksearchbox:id/assistant_robin_floaty_single_line_query";
     private static final String ID_MIC_BUTTON = "com.google.android.googlequicksearchbox:id/assistant_robin_mic_button";
-    private static final String ID_MIC_CONTAINER = "com.google.android.googlequicksearchbox:id/assistant_robin_floaty_single_line_mic_button";
     private static final String ID_PLAYBACK_ICON = "com.google.android.googlequicksearchbox:id/assistant_robin_playback_icon";
 
     public static SharedPreferences getPrefs(Context context) {
@@ -126,9 +129,7 @@ public class GeminiPowerService extends AccessibilityService {
             }
             checkVoiceSessionProgress(elapsed);
             if (voiceSessionStartTime != 0L && !playbackAutoClicked) {
-                // High frequency polling (50ms) until mic is active, then relaxed (350ms) for TTS
-                long nextDelay = !micConfirmedActive ? 50L : 350L;
-                handler.postDelayed(this, nextDelay);
+                handler.postDelayed(this, 100L);
             }
         }
     };
@@ -141,14 +142,14 @@ public class GeminiPowerService extends AccessibilityService {
         svc.voiceSessionStartTime = SystemClock.elapsedRealtime();
         svc.micConfirmedActive = false;
         svc.micAutoClicked = false;
+        svc.retryTapDone = false;
         svc.playbackAutoClicked = false;
         svc.retryLaunchDone = false;
         svc.lastPlaybackStatus = "waiting_for_google_window";
         svc.lastPlaybackDescription = "";
 
         svc.handler.removeCallbacks(svc.sessionWatcherRunnable);
-        // Start watching immediately at 40ms to catch FloatyActivity on first frame
-        svc.handler.postDelayed(svc.sessionWatcherRunnable, 40L);
+        svc.handler.postDelayed(svc.sessionWatcherRunnable, 100L);
     }
 
     private void checkVoiceSessionProgress(long elapsed) {
@@ -198,63 +199,30 @@ public class GeminiPowerService extends AccessibilityService {
     }
 
     private void inspectGoogleFloatyForMic(AccessibilityNodeInfo root, long elapsed) {
-        // If the animated voice wave is already visible, Gemini is listening!
         if (hasVisibleNodeWithId(root, ID_VOICE_WAVE)) {
             micConfirmedActive = true;
             lastPlaybackStatus = "mic_listening";
             return;
         }
 
-        // INSTANT ACTIVATION: If Google Floaty opened in text mode or mic is idle,
-        // click the mic button IMMEDIATELY on the very first frame without any delay!
-        if (!micAutoClicked && (hasVisibleNodeWithId(root, ID_MIC_BUTTON) || hasVisibleNodeWithId(root, ID_MIC_CONTAINER) || hasVisibleNodeWithId(root, ID_TEXT_QUERY))) {
-            if (clickMicButton(root)) {
-                micAutoClicked = true;
-                micConfirmedActive = true;
-                lastPlaybackStatus = "mic_auto_clicked_instant";
-                return;
-            }
-        }
-
-        if (!retryLaunchDone && elapsed >= 1200L && !micConfirmedActive) {
-            retryLaunchDone = true;
-            TriggerActivity.launchGeminiIntentOnly(this, false);
-        }
-    }
-
-    private boolean clickMicButton(AccessibilityNodeInfo root) {
-        if (clickNodeWithId(root, ID_MIC_BUTTON)) {
-            return true;
-        }
-        if (clickNodeWithId(root, ID_MIC_CONTAINER)) {
-            return true;
-        }
-        try {
-            List<AccessibilityNodeInfo> list = root.findAccessibilityNodeInfosByText("Микрофон");
-            if (list != null) {
-                for (AccessibilityNodeInfo n : list) {
-                    if (n != null) {
-                        boolean ok = performClickOnNodeOrParent(n);
-                        n.recycle();
-                        if (ok) return true;
+        // Tap once window is settled (at 320ms), and retry once at 750ms if mic is not yet active
+        if ((elapsed >= 320L && !micAutoClicked) || (elapsed >= 750L && !retryTapDone && !micConfirmedActive)) {
+            if (hasVisibleNodeWithId(root, ID_MIC_BUTTON) || hasVisibleNodeWithId(root, ID_TEXT_QUERY)) {
+                if (tapNodeWithId(root, ID_MIC_BUTTON)) {
+                    if (!micAutoClicked) {
+                        micAutoClicked = true;
+                        lastPlaybackStatus = "mic_tapped_320ms";
+                    } else {
+                        retryTapDone = true;
+                        lastPlaybackStatus = "mic_retried_750ms";
                     }
                 }
             }
-        } catch (Throwable ignored) {
         }
-        return false;
-    }
-
-    private boolean performClickOnNodeOrParent(AccessibilityNodeInfo node) {
-        if (node == null) return false;
-        AccessibilityNodeInfo curr = node;
-        while (curr != null) {
-            if (curr.isClickable() && curr.isEnabled()) {
-                return curr.performAction(AccessibilityNodeInfo.ACTION_CLICK);
-            }
-            curr = curr.getParent();
+        if (!retryLaunchDone && elapsed >= 2200L && !micConfirmedActive) {
+            retryLaunchDone = true;
+            TriggerActivity.launchGeminiIntentOnly(this, false);
         }
-        return false;
     }
 
     private boolean hasVisibleNodeWithId(AccessibilityNodeInfo root, String viewId) {
@@ -276,28 +244,100 @@ public class GeminiPowerService extends AccessibilityService {
         return false;
     }
 
-    private boolean clickNodeWithId(AccessibilityNodeInfo root, String viewId) {
+    private boolean tapNodeWithId(AccessibilityNodeInfo root, String viewId) {
         try {
             List<AccessibilityNodeInfo> nodes = root.findAccessibilityNodeInfosByViewId(viewId);
-            if (nodes != null) {
-                boolean clicked = false;
+            if (nodes != null && !nodes.isEmpty()) {
                 for (AccessibilityNodeInfo n : nodes) {
                     if (n != null) {
-                        if (!clicked && n.isVisibleToUser() && n.isEnabled()) {
-                            AccessibilityNodeInfo target = n;
-                            while (target != null && !target.isClickable()) {
-                                target = target.getParent();
+                        if (n.isVisibleToUser() && n.isEnabled()) {
+                            Rect bounds = new Rect();
+                            n.getBoundsInScreen(bounds);
+                            n.performAction(AccessibilityNodeInfo.ACTION_CLICK);
+                            n.recycle();
+                            if (bounds.width() > 0 && bounds.height() > 0) {
+                                return tapCoordinates(bounds.centerX(), bounds.centerY());
                             }
-                            if (target != null) {
-                                clicked = target.performAction(AccessibilityNodeInfo.ACTION_CLICK);
-                            }
+                            return true;
                         }
                         n.recycle();
                     }
                 }
-                return clicked;
+            }
+            // Fallback search by contentDescription ("Микрофон" / "Microphone")
+            AccessibilityNodeInfo micDesc = findNodeByContentDesc(root, "Микрофон");
+            if (micDesc == null) {
+                micDesc = findNodeByContentDesc(root, "Microphone");
+            }
+            if (micDesc != null) {
+                Rect bounds = new Rect();
+                micDesc.getBoundsInScreen(bounds);
+                micDesc.performAction(AccessibilityNodeInfo.ACTION_CLICK);
+                micDesc.recycle();
+                if (bounds.width() > 0 && bounds.height() > 0) {
+                    return tapCoordinates(bounds.centerX(), bounds.centerY());
+                }
+                return true;
             }
         } catch (Throwable ignored) {
+        }
+        return false;
+    }
+
+    private AccessibilityNodeInfo findNodeByContentDesc(AccessibilityNodeInfo root, String query) {
+        if (root == null) return null;
+        try {
+            CharSequence cd = root.getContentDescription();
+            if (cd != null && cd.toString().toLowerCase(Locale.ROOT).contains(query.toLowerCase(Locale.ROOT))) {
+                if (root.isVisibleToUser()) {
+                    return root;
+                }
+            }
+            int childCount = root.getChildCount();
+            for (int i = 0; i < childCount; i++) {
+                AccessibilityNodeInfo child = root.getChild(i);
+                if (child != null) {
+                    AccessibilityNodeInfo match = findNodeByContentDesc(child, query);
+                    if (match != null) {
+                        if (match != child) {
+                            child.recycle();
+                        }
+                        return match;
+                    }
+                    child.recycle();
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+        return null;
+    }
+
+    private boolean tapCoordinates(final int x, final int y) {
+        if (x <= 0 || y <= 0) {
+            return false;
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            try {
+                Path clickPath = new Path();
+                clickPath.moveTo(x, y);
+                clickPath.lineTo(x, y);
+                GestureDescription.StrokeDescription stroke =
+                        new GestureDescription.StrokeDescription(clickPath, 0, 50);
+                GestureDescription.Builder builder = new GestureDescription.Builder();
+                builder.addStroke(stroke);
+                return dispatchGesture(builder.build(), new AccessibilityService.GestureResultCallback() {
+                    @Override
+                    public void onCompleted(GestureDescription gestureDescription) {
+                        lastPlaybackStatus = "gesture_completed";
+                    }
+
+                    @Override
+                    public void onCancelled(GestureDescription gestureDescription) {
+                        lastPlaybackStatus = "gesture_cancelled";
+                    }
+                }, null);
+            } catch (Throwable ignored) {
+            }
         }
         return false;
     }
@@ -343,7 +383,7 @@ public class GeminiPowerService extends AccessibilityService {
                                                 }
                                             }
                                         }
-                                        boolean clicked = clickNodeWithId(latestRoot, ID_PLAYBACK_ICON);
+                                        boolean clicked = tapNodeWithId(latestRoot, ID_PLAYBACK_ICON);
                                         lastPlaybackStatus = clicked ? "playback_clicked" : "playback_failed";
                                     }
                                 } finally {
@@ -381,7 +421,7 @@ public class GeminiPowerService extends AccessibilityService {
         try {
             Uri uri = Uri.parse("content://moe.shizuku.privileged.api.shizuku");
             ContentResolver cr = context.getContentResolver();
-            Bundle res = cr.call(uri, "ping", null, null);
+            Bundle res = cr.call(uri, "getVersion", null, null);
             return res != null;
         } catch (Throwable ignored) {
             return false;
@@ -573,37 +613,38 @@ public class GeminiPowerService extends AccessibilityService {
         if (matched) {
             lastAssistantEvent = pkg + "/" + cls;
             long now = SystemClock.elapsedRealtime();
-            if (now - lastTriggerTime < 900L) {
+            if (now - lastTriggerTime < 800L) {
                 return;
             }
             lastTriggerTime = now;
             assistantTriggerCount++;
 
-            // Dismiss Vivo's Chinese BlueLM Copilot / Jovi window
-            performGlobalAction(GLOBAL_ACTION_BACK);
-
             // If user holds Power Button a SECOND time within 5 seconds of opening Gemini,
             // open the native System Power Menu (Reboot / Power Off)!
-            if (isPrefEnabled(this, PREF_DOUBLE_POWER_MENU, true) && now - lastGeminiOpenTime < 5000L) {
+            if (isPrefEnabled(this, PREF_DOUBLE_POWER_MENU, true) && lastGeminiOpenTime != 0L && (now - lastGeminiOpenTime) < 5000L) {
                 lastGeminiOpenTime = 0L;
                 voiceSessionStartTime = 0L;
+                performGlobalAction(GLOBAL_ACTION_BACK);
                 handler.postDelayed(new Runnable() {
                     @Override
                     public void run() {
                         showSystemPowerDialog();
                     }
-                }, 120L);
+                }, 100L);
                 return;
             }
 
             lastGeminiOpenTime = now;
-            // Immediate handoff to Gemini (50ms) so mic starts with zero latency
+            // Dismiss Vivo's Chinese BlueLM Copilot / Jovi window
+            performGlobalAction(GLOBAL_ACTION_BACK);
+
+            // 140ms clean window buffer to ensure Copilot dismissed cleanly before Gemini appears
             handler.postDelayed(new Runnable() {
                 @Override
                 public void run() {
                     TriggerActivity.launchGeminiOverlay(GeminiPowerService.this);
                 }
-            }, 50L);
+            }, 140L);
         }
     }
 

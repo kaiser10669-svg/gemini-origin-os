@@ -184,7 +184,7 @@ public class InfoActivity extends Activity {
 
         card.addView(createSwitchRow(
                 "🔴 Двойное удержание питания -> Выключение",
-                "Повторное удержание питания в течение 5с открывает меню выключения",
+                "Повторное удержание питания в течение 5 сек открывает меню выключения / перезагрузки",
                 GeminiPowerService.PREF_DOUBLE_POWER_MENU,
                 true
         ));
@@ -195,6 +195,15 @@ public class InfoActivity extends Activity {
                 GeminiPowerService.PREF_VTOUCH_CTS,
                 true
         ));
+
+        Button btnPowerMenu = createButton("📱 Открыть системное меню выключения", "#475569");
+        btnPowerMenu.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                GeminiPowerService.showSystemPowerDialog();
+            }
+        });
+        card.addView(btnPowerMenu);
 
         root.addView(card);
     }

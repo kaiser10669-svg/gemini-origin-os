@@ -92,8 +92,6 @@ public class TriggerActivity extends Activity {
                     "com.google.android.voicesearch.handsfree.HandsFreeActivity"
             ));
             intent.putExtra("android.speech.extra.SECURE", isLocked);
-            intent.putExtra("android.speech.extra.HANDS_FREE", true);
-            intent.putExtra("android.speech.extra.VOICE_SEARCH_HANDS_FREE", true);
             intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED);
             context.startActivity(intent);
             lastLaunchState = "hands_free_started";
