@@ -8,18 +8,21 @@ import android.content.pm.PackageManager;
 import android.graphics.Bitmap;
 import android.graphics.ColorSpace;
 import android.hardware.HardwareBuffer;
-import android.media.AudioManager;
 import android.net.Uri;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.SystemClock;
+import android.provider.Settings;
 import android.view.Display;
 import android.view.accessibility.AccessibilityEvent;
 import android.view.accessibility.AccessibilityNodeInfo;
 import android.view.accessibility.AccessibilityWindowInfo;
 import java.io.File;
+import java.io.FileDescriptor;
 import java.io.FileOutputStream;
+import java.io.PrintWriter;
 import java.util.List;
+import java.util.Locale;
 import java.util.concurrent.Executor;
 
 public class GeminiPowerService extends AccessibilityService {
@@ -28,6 +31,8 @@ public class GeminiPowerService extends AccessibilityService {
     private long lastTriggerTime = 0L;
     private long lastGeminiOpenTime = 0L;
     private long lastCtsTriggerTime = 0L;
+    private int assistantTriggerCount = 0;
+    private String lastAssistantEvent = "none";
     private final Handler handler = new Handler(Looper.getMainLooper());
 
     // Voice session tracking (auto-mic after reboot + auto-TTS speech output)
@@ -36,6 +41,8 @@ public class GeminiPowerService extends AccessibilityService {
     private boolean micAutoClicked = false;
     private boolean playbackAutoClicked = false;
     private boolean retryLaunchDone = false;
+    private String lastPlaybackStatus = "idle";
+    private String lastPlaybackDescription = "";
 
     private static final String GSA_PKG = "com.google.android.googlequicksearchbox";
     private static final String ID_VOICE_WAVE = "com.google.android.googlequicksearchbox:id/assistant_robin_floaty_single_line_voice_wave_view";
@@ -62,6 +69,7 @@ public class GeminiPowerService extends AccessibilityService {
             }
             long elapsed = SystemClock.elapsedRealtime() - voiceSessionStartTime;
             if (elapsed > 35000L) {
+                lastPlaybackStatus = "timed_out";
                 voiceSessionStartTime = 0L;
                 return;
             }
@@ -82,6 +90,8 @@ public class GeminiPowerService extends AccessibilityService {
         svc.micAutoClicked = false;
         svc.playbackAutoClicked = false;
         svc.retryLaunchDone = false;
+        svc.lastPlaybackStatus = "waiting_for_google_window";
+        svc.lastPlaybackDescription = "";
 
         svc.handler.removeCallbacks(svc.sessionWatcherRunnable);
         svc.handler.postDelayed(svc.sessionWatcherRunnable, 260L);
@@ -97,10 +107,11 @@ public class GeminiPowerService extends AccessibilityService {
             // If FloatyActivity didn't appear on first cold launch right after reboot, retry once at ~520ms
             if (elapsed >= 500L && elapsed <= 1800L && !retryLaunchDone && lastGeminiOpenTime != 0L) {
                 retryLaunchDone = true;
-                TriggerActivity.launchGeminiIntentOnly(this);
+                TriggerActivity.launchGeminiIntentOnly(this, false);
             } else if (elapsed > 4500L) {
                 // Floaty window was closed by user
                 voiceSessionStartTime = 0L;
+                lastPlaybackStatus = "google_window_missing";
             }
             return;
         }
@@ -117,6 +128,17 @@ public class GeminiPowerService extends AccessibilityService {
 
     private AccessibilityNodeInfo findGoogleQuickSearchBoxRoot() {
         try {
+            AccessibilityNodeInfo active = getRootInActiveWindow();
+            if (active != null) {
+                CharSequence p = active.getPackageName();
+                if (p != null && GSA_PKG.equals(p.toString())) {
+                    return active;
+                }
+                active.recycle();
+            }
+        } catch (Throwable ignored) {
+        }
+        try {
             List<AccessibilityWindowInfo> windows = getWindows();
             if (windows != null) {
                 for (AccessibilityWindowInfo w : windows) {
@@ -129,17 +151,6 @@ public class GeminiPowerService extends AccessibilityService {
                         root.recycle();
                     }
                 }
-            }
-        } catch (Throwable ignored) {
-        }
-        try {
-            AccessibilityNodeInfo active = getRootInActiveWindow();
-            if (active != null) {
-                CharSequence p = active.getPackageName();
-                if (p != null && GSA_PKG.equals(p.toString())) {
-                    return active;
-                }
-                active.recycle();
             }
         } catch (Throwable ignored) {
         }
@@ -197,21 +208,40 @@ public class GeminiPowerService extends AccessibilityService {
         // automatically click the speaker/playback icon if TTS is not already playing out loud!
         if (!playbackAutoClicked && elapsed >= 1400L && elapsed <= 35000L) {
             if (hasVisibleNodeWithId(root, ID_PLAYBACK_ICON)) {
+                if (hasVisibleNodeWithId(root, ID_VOICE_WAVE)) {
+                    lastPlaybackStatus = "mic_active";
+                    return;
+                }
                 playbackAutoClicked = true;
                 voiceSessionStartTime = 0L;
                 handler.postDelayed(new Runnable() {
                     @Override
                     public void run() {
                         try {
-                            AudioManager am = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
-                            if (am != null && am.isMusicActive()) {
-                                return;
-                            }
                             AccessibilityNodeInfo latestRoot = findGoogleQuickSearchBoxRoot();
                             if (latestRoot != null) {
                                 try {
                                     if (!hasVisibleNodeWithId(latestRoot, ID_VOICE_WAVE)) {
-                                        clickNodeWithId(latestRoot, ID_PLAYBACK_ICON);
+                                        // Smart check: avoid stopping audio if already speaking
+                                        List<AccessibilityNodeInfo> list = latestRoot.findAccessibilityNodeInfosByViewId(ID_PLAYBACK_ICON);
+                                        if (list != null) {
+                                            for (AccessibilityNodeInfo btn : list) {
+                                                if (btn != null && btn.isVisibleToUser() && btn.isEnabled()) {
+                                                    CharSequence desc = btn.getContentDescription();
+                                                    lastPlaybackDescription = desc != null ? desc.toString() : "";
+                                                    String d = lastPlaybackDescription.toLowerCase(Locale.ROOT);
+                                                    if (d.contains("stop") || d.contains("pause")
+                                                            || d.contains("останов") || d.contains("пауз")) {
+                                                        lastPlaybackStatus = "already_playing";
+                                                        btn.recycle();
+                                                        return;
+                                                    }
+                                                    btn.recycle();
+                                                }
+                                            }
+                                        }
+                                        boolean clicked = clickNodeWithId(latestRoot, ID_PLAYBACK_ICON);
+                                        lastPlaybackStatus = clicked ? "playback_clicked" : "playback_failed";
                                     }
                                 } finally {
                                     latestRoot.recycle();
@@ -220,7 +250,7 @@ public class GeminiPowerService extends AccessibilityService {
                         } catch (Throwable ignored) {
                         }
                     }
-                }, 250L);
+                }, 350L);
             }
         }
     }
@@ -233,20 +263,31 @@ public class GeminiPowerService extends AccessibilityService {
         return false;
     }
 
-    public static void triggerCircleToSearch(final Context context) {
-        // 1. If MiCTS is installed, launch it first for the native Global Circle to Search shimmer overlay
+    public static boolean isMictsActive(Context context) {
         try {
             PackageManager pm = context.getPackageManager();
             pm.getPackageInfo("com.parallelc.micts", 0);
-            Intent micts = new Intent();
-            micts.setComponent(new ComponentName("com.parallelc.micts", "com.parallelc.micts.ui.activity.MainActivity"));
-            micts.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
-            context.startActivity(micts);
-            return;
+            String enabled = Settings.Secure.getString(context.getContentResolver(), Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES);
+            return enabled != null && enabled.contains("com.parallelc.micts");
         } catch (Throwable ignored) {
+            return false;
+        }
+    }
+
+    public static void triggerCircleToSearch(final Context context) {
+        // 1. If MiCTS is installed AND actively enabled in Accessibility Services, launch it for shimmer overlay
+        if (isMictsActive(context)) {
+            try {
+                Intent micts = new Intent();
+                micts.setComponent(new ComponentName("com.parallelc.micts", "com.parallelc.micts.ui.activity.MainActivity"));
+                micts.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
+                context.startActivity(micts);
+                return;
+            } catch (Throwable ignored) {
+            }
         }
 
-        // 2. Standalone fallback (no MiCTS / no Shizuku needed): take in-memory screenshot and open Google Lens Screen Search
+        // 2. Standalone fallback (works 100% reliably without MiCTS or Shizuku): in-memory screenshot to Google Lens
         triggerLensScreenSearch(context);
     }
 
@@ -318,6 +359,8 @@ public class GeminiPowerService extends AccessibilityService {
 
     @Override
     public void onDestroy() {
+        handler.removeCallbacksAndMessages(null);
+        voiceSessionStartTime = 0L;
         if (instance == this) {
             instance = null;
         }
@@ -388,11 +431,13 @@ public class GeminiPowerService extends AccessibilityService {
         }
 
         if (matched) {
+            lastAssistantEvent = pkg + "/" + cls;
             long now = SystemClock.elapsedRealtime();
             if (now - lastTriggerTime < 900L) {
                 return;
             }
             lastTriggerTime = now;
+            assistantTriggerCount++;
 
             // Dismiss Vivo's Chinese BlueLM Copilot / Jovi window
             performGlobalAction(GLOBAL_ACTION_BACK);
@@ -423,5 +468,18 @@ public class GeminiPowerService extends AccessibilityService {
 
     @Override
     public void onInterrupt() {
+    }
+
+    @Override
+    protected void dump(FileDescriptor fd, PrintWriter writer, String[] args) {
+        writer.println("Gemini by kaiser v3.1 Official");
+        writer.println("assistantTriggerCount=" + assistantTriggerCount);
+        writer.println("lastAssistantEvent=" + lastAssistantEvent);
+        writer.println("voiceSessionActive=" + (voiceSessionStartTime != 0L));
+        writer.println("lastPlaybackStatus=" + lastPlaybackStatus);
+        writer.println("lastPlaybackDescription=" + lastPlaybackDescription);
+        writer.println("mictsActive=" + isMictsActive(this));
+        writer.println("writeSystemSettings=" + Settings.System.canWrite(this));
+        TriggerActivity.dumpState(writer);
     }
 }

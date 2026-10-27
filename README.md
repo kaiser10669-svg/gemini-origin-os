@@ -11,7 +11,7 @@
 [![Root](https://img.shields.io/badge/Root-NOT%20REQUIRED-brightgreen?style=for-the-badge)](#)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=for-the-badge)](LICENSE)
 
-[🇷🇺 Инструкция на русском](#-о-проекте) | [🇬🇧 English Documentation](#-about-the-project) | [📥 Скачать APK (Releases)](releases/Gemini_by_kaiser_v3.0.apk) | [📺 YouTube Видео-гайд](https://youtube.com/@KaiserReichDragon)
+[🇷🇺 Инструкция на русском](#-о-проекте) | [🇬🇧 English Documentation](#-about-the-project) | [📥 Скачать APK (Releases)](releases/Gemini_by_kaiser_v3.1.apk) | [📺 YouTube Видео-гайд](https://youtube.com/@KaiserReichDragon)
 
 ---
 
