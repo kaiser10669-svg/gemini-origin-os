@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Gemini by kaiser — X200 Pro / OS 6</string>
+    <string name="cts_name">Circle to Search</string>
+    <string name="tile_name">Gemini Оверлей</string>
+    <string name="cts_tile_name">Circle to Search</string>
+    <string name="a11y_name">Gemini &amp; Circle to Search — X200 Pro / OS 6</string>
+    <string name="a11y_desc">Перехватывает кнопку питания (0.5 сек) для вызова голосового оверлея Google Gemini, двойное зажатие для меню выключения, а также китайский VTouch для запуска глобального Google Поиска по экрану (Circle to Search). Разработано kaiser и Antigravity AI специально для 4PDA.</string>
+</resources>

@@ -1,0 +1,4 @@
+platform-tools/
+*.jks
+*.keystore
+*.p12
